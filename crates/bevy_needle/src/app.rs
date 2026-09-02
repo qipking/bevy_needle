@@ -24,9 +24,10 @@ use crate::{
     engine_index::{rebuild_agent_tool_index, AgentToolIndex},
     needle_runtime::{NeedleRuntime, RuntimeEvent, TurnJob},
     run::{
-        cancel_runs, capture_run_requests, mark_run_completed, mark_run_failed,
-        persist_cancelled_runs, persist_completed_runs, persist_failed_runs, CancelRun, ResetAgent,
-        RunAgent, RunAwaitingTools, RunEngineInFlight, RunEscalation, RunFinalized, RunNote,
+        cancel_runs, capture_run_requests, mark_run_completed, mark_run_escalated,
+        mark_run_escalating, mark_run_failed, persist_cancelled_runs, persist_completed_runs,
+        persist_escalated_runs, persist_failed_runs, CancelRun, ResetAgent, RunAgent,
+        RunAwaitingTools, RunEngineInFlight, RunEscalated, RunEscalation, RunFinalized, RunNote,
         RunOwner, RunPendingInput, RunLastResponse, RunStatus, RunTurn,
     },
     tool::{
@@ -276,6 +277,7 @@ impl Plugin for BevyNeedlePlugin {
             .init_resource::<ToolHandlers>()
             .init_resource::<AgentToolIndex>()
             .init_resource::<RuntimeDiagnostics>()
+            .init_resource::<crate::policy::EscalationPolicy>()
             .insert_resource(status_for_diagnostics(&status))
             .insert_resource(status)
             .add_message::<RunAgent>()
@@ -284,6 +286,7 @@ impl Plugin for BevyNeedlePlugin {
             .add_message::<crate::run::RunCommitted>()
             .add_message::<crate::run::RunFailed>()
             .add_message::<RunEscalation>()
+            .add_message::<RunEscalated>()
             .add_message::<crate::tool::ToolCallRequested>()
             .add_message::<crate::tool::ToolCallCompleted>()
             .add_message::<crate::tool::ToolCallFailed>()
@@ -333,11 +336,16 @@ impl Plugin for BevyNeedlePlugin {
                 resolve_run_tool_turns.in_set(RunResolutionSystems),
             )
             .add_systems(
+                RunExecution,
+                finalize_escalations.in_set(RunResolutionSystems),
+            )
+            .add_systems(
                 RunCommit,
                 (
                     persist_completed_runs,
                     persist_failed_runs,
                     persist_cancelled_runs,
+                    persist_escalated_runs,
                 )
                     .in_set(RunCommitSystems),
             );
@@ -546,16 +554,22 @@ fn handle_turn_completed(world: &mut World, run: Entity, response: crate::engine
         (snapshot.confidence_threshold, response.confidence)
     {
         if (confidence as f32) < threshold {
+            // Needle 契约：低于门限的调用**不执行**，run 进入升级语义。
+            // 升级是契约行为而非失败——Failed 只留给引擎/调度错误。
+            // 门控只约束"有调用"的轮：最终答复轮不参与门控（README 实测警告）。
             world.write_message(RunEscalation {
                 run,
                 confidence,
                 threshold,
             });
-            world.resource_mut::<RuntimeDiagnostics>().runs_failed += 1;
-            mark_run_failed(
+            world.resource_mut::<RuntimeDiagnostics>().runs_escalated += 1;
+            mark_run_escalating(
                 world,
                 run,
-                format!("置信度 {confidence:.2} 低于门限 {threshold:.2}，按约定升级处理"),
+                0,
+                format!(
+                    "置信度 {confidence:.2} 低于门限 {threshold:.2}，调用未执行（升级契约）"
+                ),
             );
             return;
         }
@@ -619,6 +633,31 @@ fn handle_turn_completed(world: &mut World, run: Entity, response: crate::engine
     if let Ok(mut entity) = world.get_entity_mut(run) {
         // RunTurn 保持为“当前轮”；resolve 回喂下一轮时才自增
         entity.insert(RunAwaitingTools { expected });
+    }
+}
+
+/// RunResolution 阶段随路的升级终结：Escalating 的 run 收束为 Escalated（终态）。
+///
+/// 当前 crate 内不做多档自动升级（无 escalate driver 时本系统就是整条升级路径的
+/// 终点）；未来 rig driver 在此状态上接管，改为按档位结果推进或回退。
+/// 绝不静默悬挂（红线 g）：无 driver 接管时直接终结并写明原因。
+pub fn finalize_escalations(world: &mut World) {
+    let escalating: Vec<(Entity, Option<String>)> = {
+        let mut query = world.query::<(Entity, &RunStatus, Option<&RunNote>)>();
+        query
+            .iter(world)
+            .filter_map(|(run, status, note)| match status {
+                RunStatus::Escalating { tier: _ } => Some((run, note.map(|n| n.0.clone()))),
+                _ => None,
+            })
+            .collect()
+    };
+    for (run, note) in escalating {
+        mark_run_escalated(
+            world,
+            run,
+            note.unwrap_or_else(|| "升级流程终结（当前无更多档位）".into()),
+        );
     }
 }
 

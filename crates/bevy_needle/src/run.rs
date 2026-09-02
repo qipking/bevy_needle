@@ -4,11 +4,16 @@
 //! 状态机：
 //!
 //! ```text
-//! RunAgent 消息 → Queued → Running ⇄ (engine turn | awaiting tools) → Completed/Failed/Cancelled
+//! RunAgent 消息 → Queued → Running ⇄ (engine turn | awaiting tools)
+//!     → Completed/Escalated/Failed/Cancelled
 //! ```
 //!
 //! Running 期间用 `RunEngineInFlight` 表示有引擎调用在后台线程执行，
 //! `RunAwaitingTools` 表示本轮工具调用等待执行与回喂。
+//!
+//! 置信度门控（Needle 契约"升级而不是执行"）：低于门限的调用**不执行**，
+//! run 先进入 `Escalating`（升级在途），终结为 `Escalated` —— 这是**正常收尾**
+//! 的一种（升级是契约行为），`Failed` 回归纯引擎/调度错误语义。
 
 use bevy_ecs::{message::Messages, prelude::*};
 use serde_json::Value;
@@ -50,7 +55,19 @@ pub enum RunStatus {
     Running,
     /// 正常收尾（respond / 空调用 / 步数耗尽）。
     Completed,
-    /// 失败（引擎错误、置信度门控等）。
+    /// 升级在途（置信度门控触发，调用未执行，等待升级处理）。
+    ///
+    /// 当前 crate 内不自动推进档位；escalate 路径（rig driver）未来在此状态上接管。
+    Escalating {
+        /// 目标升级档位（0 = 首档）。
+        tier: u32,
+    },
+    /// 升级流程终结（调用未执行，按契约"升级而不是执行"正常收尾）。
+    ///
+    /// 注意：这是**终态**且**不是失败**——游戏侧等待终态的匹配
+    /// `Completed | Failed` 需补上本变体。升级原因见 `RunNote`。
+    Escalated,
+    /// 失败（引擎错误、调度错误等）。置信度门控不进入此状态（见 `Escalated`）。
     Failed,
     /// 逻辑取消（在途结果将被丢弃）。
     Cancelled,
@@ -166,6 +183,13 @@ pub struct RunFailed {
     pub error: String,
 }
 
+/// 升级流程终结（契约行为，不是失败；配合 `RunEscalation` 使用）。
+#[derive(Message, Clone, Copy, Debug)]
+pub struct RunEscalated {
+    /// 终结的 run 实体。
+    pub run: Entity,
+}
+
 /// 置信度低于门限：按 Needle 约定应"升级"而不是执行。
 #[derive(Message, Clone, Debug)]
 pub struct RunEscalation {
@@ -234,7 +258,10 @@ pub fn cancel_runs(world: &mut World) {
             if let Some(status) = entity.get::<RunStatus>() {
                 if matches!(
                     status,
-                    RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled
+                    RunStatus::Completed
+                        | RunStatus::Escalated
+                        | RunStatus::Failed
+                        | RunStatus::Cancelled
                 ) {
                     continue;
                 }
@@ -255,6 +282,20 @@ pub fn mark_run_completed(world: &mut World, run: Entity, text: impl Into<String
 pub fn mark_run_failed(world: &mut World, run: Entity, error: impl Into<String>) {
     if let Ok(mut entity) = world.get_entity_mut(run) {
         entity.insert((RunStatus::Failed, RunFailure(error.into())));
+    }
+}
+
+/// 置信度门控触发：调用不执行，run 进入升级在途状态。
+pub fn mark_run_escalating(world: &mut World, run: Entity, tier: u32, note: impl Into<String>) {
+    if let Ok(mut entity) = world.get_entity_mut(run) {
+        entity.insert((RunStatus::Escalating { tier }, RunNote(note.into())));
+    }
+}
+
+/// 升级流程终结：按契约正常收尾（不是失败），升级说明落入 `RunNote`。
+pub fn mark_run_escalated(world: &mut World, run: Entity, note: impl Into<String>) {
+    if let Ok(mut entity) = world.get_entity_mut(run) {
+        entity.insert((RunStatus::Escalated, RunNote(note.into())));
     }
 }
 
@@ -307,6 +348,22 @@ pub fn persist_cancelled_runs(world: &mut World) {
     }
 }
 
+/// RunCommit 阶段：升级终结的 run 落转录（契约行为，不是失败）。
+pub fn persist_escalated_runs(world: &mut World) {
+    let ready = finalized_candidates(world, RunStatus::Escalated);
+    for (run, session, _, note) in ready {
+        let note = note.unwrap_or_else(|| "低置信度，按契约升级处理".to_string());
+        spawn_chat_message(
+            &mut world.commands(),
+            session,
+            ChatMessageRole::Assistant,
+            format!("[已升级] {note}"),
+        );
+        world.write_message(RunEscalated { run });
+        world.entity_mut(run).insert(RunFinalized);
+    }
+}
+
 /// 收集需要收尾的 run（无 RunFinalized 标记的终态 run）。
 fn finalized_candidates(
     world: &mut World,
@@ -318,19 +375,22 @@ fn finalized_candidates(
         &RunStatus,
         Option<&RunResultText>,
         Option<&RunFailure>,
+        Option<&RunNote>,
         Option<&RunFinalized>,
     )>();
     query
         .iter(world)
-        .filter(|(_, _, run_status, _, _, finalized)| {
+        .filter(|(_, _, run_status, _, _, _, finalized)| {
             **run_status == status && finalized.is_none()
         })
-        .map(|(run, session, _, text, failure, _)| {
+        .map(|(run, session, _, text, failure, note, _)| {
             (
                 run,
                 session.0,
                 text.map(|t| t.0.clone()).unwrap_or_default(),
-                failure.map(|f| f.0.clone()),
+                failure
+                    .map(|f| f.0.clone())
+                    .or_else(|| note.map(|n| n.0.clone())),
             )
         })
         .collect()

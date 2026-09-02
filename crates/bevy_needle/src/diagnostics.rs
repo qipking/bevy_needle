@@ -19,6 +19,8 @@ pub struct RuntimeDiagnostics {
     pub runs_completed: u64,
     /// `runs_failed`（语义见类型文档）。
     pub runs_failed: u64,
+    /// `runs_escalated`（语义见类型文档）。
+    pub runs_escalated: u64,
     /// `runs_cancelled`（语义见类型文档）。
     pub runs_cancelled: u64,
     /// `turns_completed`（语义见类型文档）。
@@ -47,10 +49,11 @@ impl RuntimeDiagnostics {
     /// 构造/执行入口（错误经 `Result` 返回，不 panic）。
     pub fn summary(&self) -> String {
         format!(
-            "engine={} runs(✓{} ✗{} ⊘{}) turns={} tools(Σ{} ✓{} ✗{}) conf={} decode_tps={}",
+            "engine={} runs(✓{} ✗{} ⇧{} ⊘{}) turns={} tools(Σ{} ✓{} ✗{}) conf={} decode_tps={}",
             if self.engine_ready { "ready" } else { "down" },
             self.runs_completed,
             self.runs_failed,
+            self.runs_escalated,
             self.runs_cancelled,
             self.turns_completed,
             self.tool_calls_total,

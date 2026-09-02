@@ -50,6 +50,18 @@
 //! | feature | 默认 | 说明 |
 //! |---|---|---|
 //! | `dlopen` | ✅ | 运行时 dlopen 引擎（常规桌面流程）。关闭后 crate 不链接 libloading，引擎必须经 `with_backend` 注入（如构建期链接）。
+//!
+//! # MSRV
+//!
+//! 本 crate 的 MSRV 为 **1.98**（`rust-version = "1.98"`）：跟随 rig-core 0.42
+//! 的 MSRV 预留升级路径（bevy 0.19 要求 ≥1.95）。
+//!
+//! # 升级路径（置信度门控 → Escalated）
+//!
+//! 置信度门控触发时，低置信度调用**不执行**，run 走 `Escalating → Escalated`
+//! 正常收尾（`Failed` 只留给引擎/调度错误）。策略面 [`crate::policy::EscalationPolicy`]
+//! 无 cfg、无外部依赖；多档 rig driver 将在未来的 `escalate` feature 下接入，
+//! 届时 `Failed`/`Escalated` 语义不变，只多出"升级途中"的实际动作。
 
 pub mod agent;
 pub mod app;
@@ -63,6 +75,7 @@ pub mod ffi;
 #[cfg(feature = "dlopen")]
 pub mod ffi_loading_guard;
 pub mod needle_runtime;
+pub mod policy;
 pub mod prelude;
 pub mod run;
 pub mod schema;

@@ -2,7 +2,8 @@
 //!
 //! Needle 的契约：**门控的是"是否执行调用"** —— 置信度低于门限时调用不被执行，
 //! 宿主应"升级"（重问、换大模型、问用户），而不是硬着头皮执行。本插件把这条
-//! 契约实现为：低于门限 → run 以 Failed 收尾 + 发出 [`RunEscalation`] 消息。
+//! 契约实现为：低于门限 → run 走 `Escalating → Escalated` 正常收尾 +
+//! 发出 [`RunEscalation`] 消息（`Failed` 只留给引擎/调度错误）。
 //!
 //! ⚠️ **实测警告**（务必阅读）：本引擎置信度数值波动极大 —— 一次完全正确的
 //! 调用可能只有 confidence=0.0002，也可能 0.9+，跨会话摆动覆盖两个数量级。
@@ -11,7 +12,8 @@
 //! 本例用 MockBackend 人为构造低置信度调用，验证门控的三要素：
 //! 1. 调用**没有**被执行（无 ToolCallCompleted 消息、无 handler 调用）；
 //! 2. `RunEscalation` 消息发出（附 confidence 与 threshold）；
-//! 3. run 以 Failed 收尾，失败原因写明"低于门限"。
+//! 3. run 以 `Escalated` 收尾（正常收尾，不是失败），说明写入 `RunNote`、
+//!    转录落"[已升级]"。
 //!
 //! ```bash
 //! cargo run -p bevy_needle --example 05_confidence
@@ -135,20 +137,22 @@ fn main() {
     );
     assert_eq!(executed.0, vec!["say_hello".to_string()], "只有高置信度调用被执行");
 
-    // run 结果核对：第一个 Failed（注明门限），第二个 Completed。
+    // run 结果核对：第一个走升级语义（Escalated，注明门限），第二个 Completed。
     println!("✓ 低置信度调用被拦截（confidence={confidence} < threshold={threshold}），未执行");
     println!("✓ 升级后重问正常执行: {:?}", executed.0);
     println!();
     println!("提示：RunEscalation {:#?} 已写入 EscalationLog ——", escalations.entries);
     println!("      真实产品在这里接重试/更强模型/人工确认。");
 
-    // 查看第一个 run 的失败原因文本。
-    let mut q = app.world_mut().query::<(&RunStatus, Option<&RunFailure>)>();
-    for (status, failure) in q.iter(app.world()) {
-        if matches!(status, RunStatus::Failed)
-            && let Some(f) = failure
+    // 查看第一个 run 的升级说明文本。
+    let mut q = app
+        .world_mut()
+        .query::<(&RunStatus, Option<&RunNote>)>();
+    for (status, note) in q.iter(app.world()) {
+        if matches!(status, RunStatus::Escalated)
+            && let Some(n) = note
         {
-            println!("失败原因示例: {}", f.0);
+            println!("升级说明示例: {}", n.0);
         }
     }
 }
@@ -164,10 +168,17 @@ fn drive_until(app: &mut App, agent: Entity, max_frames: usize) {
 }
 
 fn finalized_count(app: &mut App, agent: Entity) -> usize {
-    let mut q = app.world_mut().query::<(&RunOwner, &RunStatus, Option<&RunFinalized>)>();
+    let mut q = app
+        .world_mut()
+        .query::<(&RunOwner, &RunStatus, Option<&RunFinalized>)>();
     q.iter(app.world())
         .filter(|(o, s, f)| {
-            o.0 == agent && matches!(s, RunStatus::Completed | RunStatus::Failed) && f.is_some()
+            o.0 == agent
+                && matches!(
+                    s,
+                    RunStatus::Completed | RunStatus::Escalated | RunStatus::Failed
+                )
+                && f.is_some()
         })
         .count()
 }

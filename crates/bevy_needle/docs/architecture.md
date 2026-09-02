@@ -15,6 +15,7 @@ crates/bevy_needle/src/
 ├── needle_runtime.rs    §5  工作线程执行桥
 ├── app.rs               §6  插件：五段调度 + run 状态机
 ├── tool.rs              §7  工具/调用实体 + 纯函数 handler 分发
+├── policy.rs            §8  升级策略（无 cfg，无 rig 依赖）
 ├── agent.rs             §8  agent 组件与绑定
 ├── run.rs               §9  run 生命周期
 ├── session.rs           §10 会话转录
@@ -184,7 +185,7 @@ RunAgent ──► Queued ──submit──► Running[in-flight] ──TurnCom
         继续轮（结果回喂）◄── 全部终态 ◄─ RunAwaitingTools ◄───────┘
                              │                    有调用
                              ▼
-                    Completed / Failed(置信度门控、max_steps)
+                    Completed / Escalated(置信度门控、升级契约) / Failed(引擎错误)
 ```
 
 不变量（改代码前先读这里）：
@@ -197,8 +198,12 @@ RunAgent ──► Queued ──submit──► Running[in-flight] ──TurnCom
 - **每轮工具调用数**：`RunAwaitingTools.expected`。未知工具**立即**生成 Failed
   invocation（错误照常回喂，模型可自恢复 —— 与 Python `run()` 行为一致）。
 - **置信度门控只作用于"有调用"的轮**（Needle 契约：门控的是"是否执行调用"，
-  最终答复轮的 confidence 没有意义——实测可低至 0.00）。
-- **取消是逻辑的**：`CancelRun` 置状态，在途引擎结果到达后按 run 状态丢弃。
+  最终答复轮的 confidence 没有意义——实测可低至 0.00）。门控触发的 run 走
+  `Escalating → Escalated` 正常收尾（不是失败）：升级是契约行为，`Failed`
+  只留给引擎/调度错误；升级说明写 `RunNote`、转录落"[已升级]"、诊断计
+  `runs_escalated`。策略面见 §8 `policy.rs`。
+- **取消是逻辑的**：`CancelRun` 置状态，在途引擎结果到达后按 run 状态丢弃；
+  `Escalated` 是终态，取消请求不再改写它。
 
 ### 6.4 一轮的完整旅程（从消息到 UI）
 
@@ -208,7 +213,7 @@ RunAgent ──► Queued ──submit──► Running[in-flight] ──TurnCom
 ③ execute_needle_runs                 RunExecution：snapshot 匹配 → submit TurnJob
 ④ worker: bind? → complete()          工作线程（阻塞 0.3~1.5s）
 ⑤ 收割 TurnCompleted                  下一~若干帧
-   ├─ confidence < threshold → RunEscalation + Failed（不执行）
+   ├─ confidence < threshold → RunEscalation + Escalating→Escalated（不执行）
    ├─ 无调用                → Completed（reasoning 作摘要）
    └─ 有调用                → spawn ToolInvocation（Queued）+ ToolCallRequested 消息
 ⑥ dispatch_registered_tool_calls      纯函数 handler 执行（panic 会被捕获为 Failed）
@@ -233,7 +238,23 @@ RunExecution 写入的（Bevy 消息双缓冲）—— 单帧延迟，换来了�
   内置分发器跳过 —— resolve 只看终态，不关心谁执行）。
 - handler panic 被捕获转成 Failed（错误回喂引擎），一个坏 handler 不会炸掉帧。
 
-## 8-10. agent / run / session
+## 8. policy.rs — 升级策略（无 cfg，无 rig 依赖）
+
+`EscalationPolicy` 是宿主对"门控触发之后怎么办"的数据化决策：
+
+- `enabled`（默认 false）+ `fallback: OnlineFallback { Never, LocalModelOnly, Cloud }`
+  + `tiers: Vec<EscalationTarget>`（`Needle → Local → Remote` 能力档）。
+- **无 `#[cfg]`、无外部依赖**："要不要联网"必须在没有 rig 的时候也能做；
+  行为一致性优先于省几个字节（否则"开了 feature 之后 needle 行为变了"是
+  最难查的 bug）。
+- `EscalationTarget` 的 `Ord` 只按能力档位次（rank 0/1/2），载函不参与比较
+  —— 档位**单调递增、永不回退**（否则 needle 反复低置信度会在两档间死循环）。
+- `allows(target)`：`fallback` 是上限，`Never` 时 `Local`/`Remote` 都不可用。
+- 当前执行者是 `finalize_escalations`（`Escalating → Escalated` 直接终结，
+  无更多档位时不静默悬挂）；未来 `escalate` feature 的 rig driver 在
+  `Escalating` 状态上接管，策略语义不变。
+
+## 9-10. agent / run / session
 
 - `NeedleAgentSpec`（参数）+ `AgentToolRefs`（绑定）+ `PrimarySession`（会话指针）
   + `AgentEngineOptions`（weights/tool_index 路径）。绑定是**数据**：attach/detach

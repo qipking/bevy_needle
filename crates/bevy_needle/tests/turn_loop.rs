@@ -102,7 +102,7 @@ fn multi_turn_tool_feedback_loop() {
 
 #[test]
 fn confidence_gate_blocks_execution() {
-    // 低置信度调用：应被拒绝执行（invocation 不产生）
+    // 低置信度调用：应被拒绝执行（invocation 不产生），run 走升级语义而不是失败
     let mock = MockBackend::new(vec![json!({
         "type": "call",
         "success": true,
@@ -125,10 +125,58 @@ fn confidence_gate_blocks_execution() {
     app.world_mut().write_message(RunAgent::new(handles.agent, "hi"));
     run_until_idle(&mut app, 200);
 
-    let replies = collect_replies(&mut app);
-    assert_eq!(replies.len(), 1);
-    assert!(replies[0].starts_with("[failed]"), "run should fail: {replies:?}");
-    assert!(replies[0].contains("置信度"), "failure should mention confidence");
+    // 新契约：Escalating → Escalated（正常收尾），Failed 只留给引擎错误
+    let statuses: Vec<RunStatus> = app
+        .world_mut()
+        .query::<&RunStatus>()
+        .iter(app.world())
+        .copied()
+        .collect();
+    assert_eq!(statuses, vec![RunStatus::Escalated]);
+
+    // 升级说明写入 RunNote（含门限信息）
+    let note = app
+        .world_mut()
+        .query::<&RunNote>()
+        .iter(app.world())
+        .next()
+        .map(|n| n.0.clone())
+        .unwrap_or_default();
+    assert!(note.contains("置信度"), "note should explain escalation: {note}");
+    assert!(note.contains("0.01") && note.contains("0.50"), "note should carry numbers: {note}");
+
+    // 绝不产生工具调用（契约核心：不执行）
+    let invocations = app
+        .world_mut()
+        .query::<&ToolInvocation>()
+        .iter(app.world())
+        .count();
+    assert_eq!(invocations, 0, "gated call must not spawn any invocation");
+
+    // 转录以"[已升级]"落会话（升级是契约行为，不是失败）
+    let transcript = collect_transcript(app.world_mut(), handles.session);
+    assert!(
+        transcript
+            .iter()
+            .any(|(role, text)| matches!(role, ChatMessageRole::Assistant) && text.contains("已升级")),
+        "transcript should record escalation: {transcript:?}"
+    );
+
+    // Escalated 是终态：取消请求不改写状态
+    let run_entity = app
+        .world_mut()
+        .query::<(Entity, &RunStatus)>()
+        .iter(app.world())
+        .next()
+        .map(|(e, _)| e)
+        .expect("run entity exists");
+    app.world_mut().write_message(CancelRun { run: run_entity });
+    run_until_idle(&mut app, 50);
+    let status_after_cancel = *app
+        .world()
+        .get::<RunStatus>(run_entity)
+        .expect("run still alive");
+    assert_eq!(status_after_cancel, RunStatus::Escalated);
 }
 
 #[test]
