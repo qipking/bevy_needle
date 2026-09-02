@@ -1,9 +1,14 @@
 # bevy_needle
 
+[![crates.io](https://img.shields.io/crates/v/bevy_needle.svg)](https://crates.io/crates/bevy_needle)
+[![docs.rs](https://img.shields.io/docsrs/bevy_needle)](https://docs.rs/bevy_needle)
+[![License](https://img.shields.io/crates/l/bevy_needle)](https://github.com/qipking/bevy_needle#license)
+[![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://github.com/qipking/bevy_needle)
+
 **Bevy ECS 中的本地工具调用模型。** 把 [needle2](https://github.com/cactus-compute/needle)
 —— 14 MB、45M 参数、纯本地推理的工具调用引擎 —— 装进 Bevy 的实体组件系统：
 provider/agent/tool/session/run 全是实体与组件，指令解析与函数调用就是几个普通系统。
-封装精神对齐 [`bevy_rig`](https://crates.io/crates/bevy_rig)。
+封装精神对齐 [`bevy_rig`](https://crates.io/crates/bevy_rig)。MSRV：**Rust 1.98+**。
 
 ```
 玩家输入 ──► RunAgent 消息 ──► 工作线程 needle_complete（约束解码，JSON 必合法）
@@ -83,7 +88,7 @@ cargo test -p bevy_needle                        # 21 项测试，无引擎即�
 | `02_tools` | schema 全参数类型（枚举/区间/可选）+ handler 三种写法 + 失败路径（业务 Err / panic / 未知工具） | ❌ mock |
 | `03_agents` | 多 agent 自动排队、工具集动态增删触发重绑、全部 agent 参数 | ❌ mock |
 | `04_lifecycle` | 逐帧观察 run 状态机：RunTurn / in-flight / awaiting / 逻辑取消 | ❌ mock |
-| `05_confidence` | 置信度门控三要素：不执行 + RunEscalation + 失败原因；阈值校准方法 | ❌ mock |
+| `05_confidence` | 置信度门控三要素：不执行 + RunEscalation + Escalated 收尾；阈值校准方法 | ❌ mock |
 | `06_sessions` | 转录镜像、手动追加消息、ChatMessageSeq 排序、ResetAgent 语义 | ❌ mock |
 | `07_mock_backend` | Mock 三种注入（脚本/dynamic/自定义代理后端）+ 无引擎测试写法 | ❌ mock |
 | `08_extraction` | 结构化抽取：单工具 agent 即抽取器，离题输入返回空调用 | ❌ mock |
@@ -127,9 +132,10 @@ Telemetry       诊断刷新钩子
 
 - **多轮回喂**：本轮调用全部终态后，结果数组（错误以 `{"error": …}`）作为下一轮
   `complete()` 输入 —— 与 Python `run()` 完全一致；`max_steps` 封顶。
-- **置信度门控**：低于门限的调用**不执行**，发 `RunEscalation` 消息按契约升级。
-  注意：本引擎置信度数值波动极大（实测正确调用可低至 0.0002，也可达 0.9+），
-  **默认不设门限**，按自家产品实测校准后再启用。
+- **置信度门控**：低于门限的调用**不执行**，run 走 `Escalating → Escalated`
+  正常收尾并发 `RunEscalation` 消息（升级契约的接入点；`Failed` 只留给
+  引擎/调度错误）。注意：本引擎置信度数值波动极大（实测正确调用可低至 0.0002，
+  也可达 0.9+），**默认不设门限**，按自家产品实测校准后再启用。
 - **引擎单会话**：同一时刻引擎只服务一个 agent；多 agent 的请求在插件内自动排队，
   切换时在轮次边界重绑（`needle_init` 会重置 KV，这是引擎语义）。
 - **逻辑取消**：`CancelRun` 丢弃在途结果（引擎调用本身不可中断）。
@@ -140,7 +146,7 @@ Telemetry       诊断刷新钩子
 
 1. `BevyNeedlePlugin::new(EngineConfig::with_library(path))` 显式路径（**权威**：缺失即报错）
 2. 环境变量 `NEEDLE_LIB_PATH`
-3. 仓库内 `third_party/needle/<version>/libneedle.so`（`scripts/fetch_engine.sh --wheel` 解出）
+3. 仓库内 `third_party/needle/<version>/libneedle.so`（随发布包提供，或从官方 wheel 离线解出）
 4. 可执行文件同目录
 5. `~/.cache/cactus-needle/<version>/`（与 Python 绑定共用缓存）
 
@@ -150,21 +156,15 @@ Telemetry       诊断刷新钩子
 app.add_plugins(BevyNeedlePlugin::with_backend(MyEmbeddedBackend::new()));
 ```
 
-### 获取脚本（`scripts/fetch_engine.sh`）
+### 获取引擎
 
-```bash
-scripts/fetch_engine.sh                       # 在线下载当前平台引擎 → ~/.cache/cactus-needle/<ver>/
-scripts/fetch_engine.sh --platform macos-arm64 --force   # 交叉获取其他平台
-scripts/fetch_engine.sh --wheel ./cactus_needle-2.0.3-py3-none-manylinux2014_x86_64.whl
-                                              # 离线：从本地 wheel 解压（air-gapped 设备）
-scripts/fetch_engine.sh --list                # 全部平台矩阵
-scripts/fetch_engine.sh --out ./third_party/needle     # 输出到仓库内（可提交）
-```
+引擎以各平台预编译产物（`libneedle.{so,dylib,dll}`）随仓库 `third_party/needle/<version>/`
+分发，或从官方 cactus_needle wheel 中解出放到 `~/.cache/cactus-needle/<version>/`
+（与 Python 绑定共用缓存路径）。
 
-支持 8 个 wheel 平台（linux/musl/macos/windows × x86_64/arm64），自动检测 libc
-种类（glibc/musl），幂等（已存在跳过，`--force` 重取），平台与 wheel 不匹配直接报错。
-armv7/riscv64/mipsel/wasm 等上游仅提供 standalone runner（无 wheel），请用
-`--features link` 构建期链接。
+支持 linux/musl/macos/windows × x86_64/arm64 等桌面平台；armv7/riscv64/mipsel/wasm 等
+上游仅提供 standalone runner（无 wheel），请用构建期链接（`with_backend` 注入）替代
+运行时 dlopen。
 
 调优权重（LoRA 微调合并出的 `.cact`，与引擎版本绑定、加载后不可卸载）：
 
@@ -190,7 +190,7 @@ BevyNeedlePlugin::new(EngineConfig::with_weights("tuned.cact"))
 
 ## 演示项目：univis_needle_demo
 
-核心实现逐模块解析见 [`docs/architecture.md`](docs/architecture.md)。
+核心实现逐模块解析见 [`crates/bevy_needle/docs/architecture.md`](crates/bevy_needle/docs/architecture.md)。
 
 `examples/univis_needle_demo` —— 用文字指令操控
 [univis_ui](https://github.com/univiseditor/univis_ui)（SDF 混合空间 UI 框架）：

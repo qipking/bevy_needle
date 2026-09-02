@@ -1,6 +1,6 @@
 [package]
 name = "bevy_needle"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Bevy ECS integration for the Needle tool-calling model: local instruction parsing and function calling with the 14 MB on-device needle2 engine. No Python, no cloud, no async runtime."
