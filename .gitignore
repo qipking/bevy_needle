@@ -2,11 +2,11 @@
 /target
 **/target
 
-# 引擎二进制（scripts/fetch_engine.sh 获取；勿提交 14MB 二进制）
+# 引擎二进制（随发布包分发或 wheel 解出；勿提交大体积二进制）
 third_party/needle/*/libneedle.*
 
-# 演示用 CJK 字体（31MB；见 examples/univis_needle_demo/assets/fonts/README.md）
-examples/univis_needle_demo/assets/fonts/*.ttc
+# 演示用 CJK 字体（31MB；见 demo/univis_needle_demo/assets/fonts/README.md）
+demo/univis_needle_demo/assets/fonts/*.ttc
 
 # 本机私有
 Cargo.lock.bak
