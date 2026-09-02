@@ -1,0 +1,86 @@
+[package]
+name = "bevy_needle"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Bevy ECS integration for the Needle tool-calling model: local instruction parsing and function calling with the 14 MB on-device needle2 engine. No Python, no cloud, no async runtime."
+license.workspace = true
+repository = "https://github.com/bevy-needle/bevy_needle"
+homepage = "https://github.com/bevy-needle/bevy_needle"
+documentation = "https://docs.rs/bevy_needle"
+keywords = ["bevy", "ecs", "llm", "tool-calling", "gamedev"]
+categories = ["game-development", "api-bindings"]
+readme = "../../README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[package.metadata.bevy_cli]
+release = true
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+missing_panics_doc = "warn"
+
+[dependencies]
+bevy_app = { workspace = true }
+bevy_ecs = { workspace = true }
+bevy_tasks = { workspace = true }
+libloading = { version = "0.8", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+
+[features]
+default = ["dlopen"]
+## Load the engine at runtime through `libloading` (the usual desktop flow).
+dlopen = ["dep:libloading"]
+
+# ── 教学示例（按编号即学习顺序）────────────────────────────────
+# 每个示例聚焦一个功能点，逐行注释，可独立运行：
+#   cargo run -p bevy_needle --example 01_anatomy
+
+[[example]]
+name = "01_anatomy"
+path = "examples/01_anatomy.rs"
+
+[[example]]
+name = "02_tools"
+path = "examples/02_tools.rs"
+
+[[example]]
+name = "03_agents"
+path = "examples/03_agents.rs"
+
+[[example]]
+name = "04_lifecycle"
+path = "examples/04_lifecycle.rs"
+
+[[example]]
+name = "05_confidence"
+path = "examples/05_confidence.rs"
+
+[[example]]
+name = "06_sessions"
+path = "examples/06_sessions.rs"
+
+[[example]]
+name = "07_mock_backend"
+path = "examples/07_mock_backend.rs"
+
+[[example]]
+name = "08_extraction"
+path = "examples/08_extraction.rs"
+
+[[example]]
+name = "09_diagnostics"
+path = "examples/09_diagnostics.rs"
+
+[[example]]
+name = "10_external_dispatch"
+path = "examples/10_external_dispatch.rs"

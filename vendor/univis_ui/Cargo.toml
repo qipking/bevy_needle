@@ -1,0 +1,259 @@
+[package]
+name = "univis_ui"
+version = "0.3.1"
+edition = "2024"
+description = "A high-performance, SDF-based hybrid world-space UI framework for the Bevy game engine."
+authors = ["abdellah-haffout <abdellahhaffout9@gmail.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/univiseditor/univis_ui"
+homepage = "https://github.com/univiseditor/univis_ui"
+keywords = ["bevy", "ui", "sdf", "gamedev", "hud"]
+categories = ["game-development", "gui", "rendering"]
+include = [
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
+    "/README_AR.md",
+    "/RELEASE_NOTES.md",
+    "/RELEASE_PREP_0.3.0.md",
+    "/MIGRATION.md",
+    "/MIGRATION_AR.md",
+    "/ROADMAP.md",
+    "/changelog.md",
+    "/src/**",
+    "/examples/**",
+]
+
+[workspace]
+members = [
+    ".",
+    "crates/univis_ui_engine",
+    "crates/univis_ui_style",
+    "crates/univis_ui_interaction",
+    "crates/univis_ui_widgets",
+]
+resolver = "3"
+
+[workspace.dependencies]
+bevy = { version = "0.19.0", default-features = false, features = [
+    "default_app",
+    "std",
+    "android-native-activity",
+    "bevy_gilrs",
+    "bevy_winit",
+    "default_font",
+    "multi_threaded",
+    "webgl2",
+    "x11",
+    "wayland",
+    "sysinfo_plugin",
+    "common_api",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_post_process",
+    "tonemapping_luts",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_picking",
+    "mesh_picking",
+    "tonemapping_luts",
+    "zstd_rust",
+    "keyboard",
+    "mouse",
+] }
+parley = { version = "0.9.0", default-features = false, features = ["std"] }
+swash = { version = "0.2" }
+
+
+[features]
+default = []
+example_bloom = ["bevy/bevy_post_process"]
+
+[dependencies]
+bevy = { workspace = true }
+univis_ui_engine = { path = "crates/univis_ui_engine", version = "0.3.1" }
+univis_ui_style = { path = "crates/univis_ui_style", version = "0.3.1" }
+univis_ui_interaction = { path = "crates/univis_ui_interaction", version = "0.3.1" }
+univis_ui_widgets = { path = "crates/univis_ui_widgets", version = "0.3.1" }
+
+[[example]]
+name = "grid_columns"
+path = "examples/grid/columns.rs"
+
+[[example]]
+name = "grid_tracks"
+path = "examples/grid/tracks.rs"
+
+[[example]]
+name = "grid_auto_flow"
+path = "examples/grid/auto_flow.rs"
+
+[[example]]
+name = "grid_item_placement"
+path = "examples/grid/item_placement.rs"
+
+[[example]]
+name = "grid_complex_dashboard"
+path = "examples/grid/complex_dashboard.rs"
+
+[[example]]
+name = "grid_simple_blocks"
+path = "examples/grid/simple_blocks.rs"
+
+[[example]]
+name = "grid_empty_cells"
+path = "examples/grid/empty_cells.rs"
+
+
+
+[[example]]
+name = "layout_flex"
+path = "examples/layout/flex.rs"
+
+[[example]]
+name = "layout_masonry"
+path = "examples/layout/masonry.rs"
+
+[[example]]
+name = "layout_stack"
+path = "examples/layout/stack.rs"
+
+[[example]]
+name = "layout_radial"
+path = "examples/layout/radial.rs"
+
+[[example]]
+name = "widgets_controls"
+path = "examples/widgets/controls.rs"
+
+[[example]]
+name = "widgets_inputs"
+path = "examples/widgets/inputs.rs"
+
+[[example]]
+name = "widgets_display"
+path = "examples/widgets/display.rs"
+
+[[example]]
+name = "widgets_containers"
+path = "examples/widgets/containers.rs"
+
+[[example]]
+name = "responsive_layout_test"
+path = "examples/responsive_layout_test.rs"
+
+[[example]]
+name = "responsive_hud"
+path = "examples/responsive_hud.rs"
+
+
+[[example]]
+name = "widgets_media"
+path = "examples/widgets/media.rs"
+
+[[example]]
+name = "single_badge"
+path = "examples/widgets/single/badge.rs"
+
+[[example]]
+name = "single_button"
+path = "examples/widgets/single/button.rs"
+
+[[example]]
+name = "single_checkbox"
+path = "examples/widgets/single/checkbox.rs"
+
+[[example]]
+name = "single_divider"
+path = "examples/widgets/single/divider.rs"
+
+[[example]]
+name = "single_drag_value"
+path = "examples/widgets/single/drag_value.rs"
+
+[[example]]
+name = "single_icon_btn"
+path = "examples/widgets/single/icon_btn.rs"
+
+[[example]]
+name = "single_image"
+path = "examples/widgets/single/image.rs"
+
+[[example]]
+name = "single_panel"
+path = "examples/widgets/single/panel.rs"
+
+[[example]]
+name = "single_progress"
+path = "examples/widgets/single/progress.rs"
+
+[[example]]
+name = "single_radio"
+path = "examples/widgets/single/radio.rs"
+
+[[example]]
+name = "single_scroll_view"
+path = "examples/widgets/single/scroll_view.rs"
+
+[[example]]
+name = "single_seekbar"
+path = "examples/widgets/single/seekbar.rs"
+
+[[example]]
+name = "single_select"
+path = "examples/widgets/single/select.rs"
+
+[[example]]
+name = "single_text_field"
+path = "examples/widgets/single/text_field.rs"
+
+[[example]]
+name = "single_toggle"
+path = "examples/widgets/single/toggle.rs"
+
+
+
+[[example]]
+name = "text_3d"
+path = "examples/text_3d.rs"
+
+[[example]]
+name = "picking_3d"
+path = "examples/3d/picking_3d.rs"
+
+[[example]]
+name = "picking_2d"
+path = "examples/2d/picking_2d.rs"
+
+[[example]]
+name = "toggle_seekbar"
+path = "examples/toggle_seekbar.rs"
+
+[[example]]
+name = "complex_showcase"
+path = "examples/complex_showcase.rs"
+
+[[example]]
+name = "sci_fi_showcase"
+path = "examples/3d/sci_fi_showcase.rs"
+
+[[example]]
+name = "border_lighting"
+path = "examples/3d/border_lighting.rs"
+
+[[example]]
+name = "border_shapes_2d"
+path = "examples/2d/border_shapes_2d.rs"
+
+[[example]]
+name = "hud_showcase"
+path = "examples/2d/hud_showcase.rs"
+
+
+
+[[example]]
+name = "grid_bento"
+path = "examples/grid/bento.rs"

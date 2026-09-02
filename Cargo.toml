@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/bevy_needle",
+    "examples/univis_needle_demo",
+]
+# vendor/univis_ui 是带本地补丁的上游源码副本（自带 workspace 声明）
+exclude = ["vendor/univis_ui"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["bevy_needle contributors"]
+repository = "https://github.com/bevy-needle/bevy_needle"
+
+[workspace.dependencies]
+bevy_app = "=0.19.0"
+bevy_ecs = "=0.19.0"
+bevy_tasks = "=0.19.0"
+bevy = "=0.19.0"
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# 本仓库内的三方引擎（从 cactus_needle wheel 解出，见 tools/extract_engine.py）
+# libneedle.so 位于 third_party/needle/2.0.3/
+
+[profile.demo]
+inherits = "release"
+opt-level = 2

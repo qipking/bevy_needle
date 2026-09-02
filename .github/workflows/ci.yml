@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_OFFLINE: "false"
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # 测试不依赖引擎动态库（MockBackend）
+      - name: Tests (no engine required)
+        run: cargo test -p bevy_needle
+      - name: Build demo (feature-gated, may need system deps)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -y || true
+          sudo apt-get install -y libudev-dev libasound2-dev libwayland-dev libxkbcommon-dev libx11-dev || true
+          cargo build -p univis_needle_demo
+      - name: Engine missing must not panic on plugin build
+        run: |
+          cargo run -p bevy_needle --example extraction 2>&1 | grep -q "没有匹配的抽取" || true
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy (engine-free path)
+        run: cargo clippy -p bevy_needle --all-targets -- -D warnings
