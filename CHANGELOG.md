@@ -3,6 +3,67 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+- **PR-B：Driver 契约与 rig 适配**（规格 v5；feature 分层 `escalate`=能力 / `rig`=实现）：
+  - **升级能力层** `src/escalate/`（`escalate` feature，**无 rig 依赖**）：
+    - `driver.rs`：`Driver` trait（**无 poll**——submit/cancel + channel 回灌）、
+      `DriverId`（RunResolution 只认 id 不认 provider）、`DriverError`（分类：
+      Unavailable/Protocol/Transport/Model，不压成单一 Engine）、
+      `DriverAttemptCtx`（转录/工具集快照）、`DriverOutcome`/`DriverEvent`
+      （事件强制携带 `(run, epoch)`，stale 丢弃）；
+    - `state.rs`：`EscalationState` 组件（tier/driver_id/epoch/attempt/deadline/
+      started/reason/handle——上下文与 `RunStatus` 分离；tier 是**下标不是 rank**，
+      attempt 与 tier 分开计数）；
+    - `registry.rs`：`DriverRegistry`（tier → DriverId 映射；模型构造能力在此层，
+      policy 保持纯决策）；
+    - `bus.rs`：`DriverEventBus`（channel 回灌，ECS 只 drain）；
+    - `coordinator.rs`：`driver_coordinator` 系统（submit/drain/单档超时/协作式
+      取消/终态规则——「没试/不许试→Escalated」「试过且坏了→Failed」；排在
+      `finalize_escalations` 之前）；
+    - `mock.rs`：`MockDriver` 脚本化 driver——**无 rig、无网络跑通完整升级链路**；
+    - e2e：成功→Completed、末档失败→Failed、无 driver→Escalated（安全阀）。
+  - **rig 实现层** `src/rig/`（`rig` feature，git-pinned rig-core/rig-run + tokio）：
+    - `agent.rs`：`RigDriverState` 组件——`AgentRun` 是**一次 attempt 的内部
+      状态**（Bevy Run ⊃ AgentRun；每次 attempt 重建，history 从转录快照按
+      `ChatMessageSeq` 读）；`rig_step_system` 步进（CallModel→等待模型回灌 /
+      CallTools→**翻译为 ECS ToolInvocation**/Done→Succeeded）；invalid
+      tool-call recovery（大小写 Repair 优先，否则 Retry 回灌纠正反馈）；
+    - `tool_bridge.rs`：`PortableDynamicTool` 绊线注册（rig 侧回调永不成功
+      ——I3 类型化）；`preresolved_result` 不进 ECS 直接回灌（I19）；
+      `tool_call.id` **严格往返** `ToolCall.call_id`，缺失报错禁止 mint（I18）；
+      回喂前按原始调用顺序重排（I20）；
+    - `transcript.rs`（M1）/ `session_bridge.rs`（M2 `ConversationMemory`）/ 
+      `runtime.rs`（懒 tokio，`block_on` 仅 worker 侧——I22）/ `transport.rs`
+      （R2→R3 切换面）；
+    - `model_turn_with_tools`：`ModelTurn` 规范构造入口（executable/allowed
+      集合必须来自 advertise 的工具集，留空会把所有 tool call 判非法）。
+  - e2e（rig 工具路径）：注入 `ModelTurn` → `CallTools` → ECS invocation
+    （handler 执行、call_id 往返）→ 结果按序回喂 → 下一轮 → Done → Completed。
+- `EscalationPolicy::below_threshold`：f64/f32 cast 的**唯一允许入口**
+  （规格 §10），app.rs 门控改走它。
+
+### Changed
+- **breaking（随 PR-B 一次性完成，规格 §2.3 / P0-6 维护者裁决）**：
+  `EscalationTarget` 从 `Needles / Local(LazyModel) / Remote(LazyModel)`
+  改为 **`Needle / Local / Remote`（无载函）**——去 execution 泄漏（policy
+  回归纯决策，模型构造能力归 `DriverRegistry`）+ 拼写修正（与 `rank()` 文档
+  一致）。0.2.0 中 `Local/Remote` 载函位本就不可实现，破坏面为零。
+- **breaking（feature 重命名/拆分，规格 §9）**：原脚手架 `escalate`（含 rig
+  依赖）拆为 `escalate`（能力层，无 rig）+ `rig`（实现层，
+  `rig = ["escalate", "dep:rig-core", "dep:rig-run", "dep:tokio"]`）。
+  原 `escalate-local` 未迁移：pinned rev 的 rig-core 已无 per-provider
+  features（#2397），本地模型档待 rig 0.43。
+- `finalize_escalations` 收窄为**纯安全阀**（不变量 I9）：只把**未被认领**
+  （无 `EscalationState`）的 Escalating 收束为 Escalated；已认领的在途
+  attempt 由 coordinator 的 deadline/总预算/终态规则保证收敛。无 `escalate`
+  feature 时行为与 0.2.0 完全一致。
+
+### Fixed
+- rig-run 协议冒烟暴露：`AgentRun` 默认 `max_turns = 1`，工具回喂后的续轮
+  会立刻 `MaxTurnsError`——rig attempt 现按 needle `max_steps` 语义取 8。
+
 ## [0.2.0] - 2026-09-08
 
 ### Changed

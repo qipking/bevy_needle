@@ -247,12 +247,44 @@ RunExecution 写入的（Bevy 消息双缓冲）—— 单帧延迟，换来了�
 - **无 `#[cfg]`、无外部依赖**："要不要联网"必须在没有 rig 的时候也能做；
   行为一致性优先于省几个字节（否则"开了 feature 之后 needle 行为变了"是
   最难查的 bug）。
-- `EscalationTarget` 的 `Ord` 只按能力档位次（rank 0/1/2），载函不参与比较
-  —— 档位**单调递增、永不回退**（否则 needle 反复低置信度会在两档间死循环）。
-- `allows(target)`：`fallback` 是上限，`Never` 时 `Local`/`Remote` 都不可用。
-- 当前执行者是 `finalize_escalations`（`Escalating → Escalated` 直接终结，
-  无更多档位时不静默悬挂）；未来 `escalate` feature 的 rig driver 在
-  `Escalating` 状态上接管，策略语义不变。
+- `EscalationTarget` 是**纯能力类别**（无载函，PR-B breaking）：模型构造
+  能力归 `escalate` 层的 `DriverRegistry`——policy 回归纯决策（不变量 I5/I7）。
+- **tier 是 `tiers` 数组下标，不是 rank**（I10）：`[Local(Candle), Local(GPTQ),
+  Remote]` 里两个 Local 的 rank 相同，按 rank 推 tier 会让第二档永远选不中；
+  `rank()` 只用于 `fallback` 上限判断。
+- `below_threshold` 是 f64/f32 cast 的唯一允许入口（比较收敛，不散落 systems）。
+
+## 8b. escalate/ + rig/ — Driver 契约与 rig 适配（PR-B）
+
+```text
+EscalationPolicy（纯决策）──tier──► DriverCoordinator（escalate 层）
+                                        │ 只认 DriverId（I6）
+                                        ▼
+                                  DriverRegistry ──► Driver::submit（无 poll，I16）
+                                                        │
+                                        ┌───────────────┴──────────────┐
+                                        ▼                              ▼
+                                  MockDriver（脚本化）           RigDriver（rig 层）
+                                                                        │
+                                                          RigDriverState { AgentRun }  ← ECS 组件（I4）
+                                                                        │
+                                                        CallModel（异步模型调用，worker 回灌）
+                                                        CallTools（→ ECS ToolInvocation，I3）
+                                                                        │
+                                                              DriverEventBus（channel）
+                                                                        │
+                                                              ECS drain → 终态规则（§6/§7）
+```
+
+不变量速查（规格 §1，违反即不合格）：主线程永不 block_on（I1）；工具执行必在
+ECS（I3）；Bevy Run ⊃ AgentRun（I4）；RunStatus 只表生命周期、上下文在
+`EscalationState`（I8）；`finalize_escalations` 是安全阀不是业务逻辑（I9）；
+tier 是下标不是 rank（I10）；Driver 无 poll 无 Future（I16）；异步 job 携带
+`(run, epoch)`、stale 丢弃（I17）；call_id 严格往返禁止 mint（I18）；
+preresolved 不进 ECS（I19）；工具结果按原始顺序回喂（I20）。
+
+终态归属（规格 §6）：「没试/不许试」→ `Escalated`；「试过且坏了」→ `Failed`；
+「用户喊停」→ `Cancelled`。
 
 ## 9-10. agent / run / session
 

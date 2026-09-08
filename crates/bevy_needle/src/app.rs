@@ -350,6 +350,32 @@ impl Plugin for BevyNeedlePlugin {
                     .in_set(RunCommitSystems),
             );
 
+        // ── 升级能力层 / rig 实现层接线（规格 §3 接线约定）────────────────
+        // coordinator 与 rig 步进系统都必须排在 finalize_escalations **之前**：
+        // 后者会把所有 Escalating 收束为 Escalated（安全阀）。
+        #[cfg(feature = "escalate")]
+        {
+            app.init_resource::<crate::escalate::DriverEventBus>()
+                .init_resource::<crate::escalate::DriverRegistry>()
+                .add_systems(
+                    RunExecution,
+                    crate::escalate::driver_coordinator
+                        .in_set(RunResolutionSystems)
+                        .before(finalize_escalations),
+                );
+
+            #[cfg(feature = "rig")]
+            {
+                app.init_resource::<crate::rig::RigModelInbox>()
+                    .add_systems(
+                        RunExecution,
+                        crate::rig::rig_step_system
+                            .in_set(RunResolutionSystems)
+                            .before(crate::escalate::driver_coordinator),
+                    );
+            }
+        }
+
         if let Some(runtime) = runtime {
             app.insert_resource(runtime);
         }
@@ -553,7 +579,11 @@ fn handle_turn_completed(world: &mut World, run: Entity, response: crate::engine
     if let (Some(threshold), Some(confidence)) =
         (snapshot.confidence_threshold, response.confidence)
     {
-        if (confidence as f32) < threshold {
+        // f64/f32 cast 的唯一入口（规格 §10）：比较收敛到 EscalationPolicy。
+        let below = world
+            .resource::<crate::policy::EscalationPolicy>()
+            .below_threshold(confidence, threshold);
+        if below {
             // Needle 契约：低于门限的调用**不执行**，run 进入升级语义。
             // 升级是契约行为而非失败——Failed 只留给引擎/调度错误。
             // 门控只约束"有调用"的轮：最终答复轮不参与门控（README 实测警告）。
@@ -636,12 +666,33 @@ fn handle_turn_completed(world: &mut World, run: Entity, response: crate::engine
     }
 }
 
-/// RunResolution 阶段随路的升级终结：Escalating 的 run 收束为 Escalated（终态）。
+/// 安全阀（不变量 I9）：未被任何 driver 认领的 `Escalating` 收束为 `Escalated`
+/// （「没试/不许试」，规格 §6），绝不静默悬挂。
 ///
-/// 当前 crate 内不做多档自动升级（无 escalate driver 时本系统就是整条升级路径的
-/// 终点）；未来 rig driver 在此状态上接管，改为按档位结果推进或回退。
-/// 绝不静默悬挂（红线 g）：无 driver 接管时直接终结并写明原因。
+/// 已被认领（存在 `EscalationState`）的升级**不归本阀管**——那是 coordinator
+/// 的在途 attempt，由其 deadline / 总预算 / 终态规则保证收敛（规格 §7）。
+/// 无 `escalate` feature 时不存在 coordinator，所有 Escalating 都是未认领的。
 pub fn finalize_escalations(world: &mut World) {
+    #[cfg(feature = "escalate")]
+    let escalating: Vec<(Entity, Option<String>)> = {
+        let mut query = world.query::<(
+            Entity,
+            &RunStatus,
+            Option<&crate::escalate::EscalationState>,
+            Option<&RunNote>,
+        )>();
+        query
+            .iter(world)
+            .filter_map(|(run, status, claimed, note)| match status {
+                RunStatus::Escalating { tier: _ } if claimed.is_none() => {
+                    Some((run, note.map(|n| n.0.clone())))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    #[cfg(not(feature = "escalate"))]
     let escalating: Vec<(Entity, Option<String>)> = {
         let mut query = world.query::<(Entity, &RunStatus, Option<&RunNote>)>();
         query
@@ -652,6 +703,7 @@ pub fn finalize_escalations(world: &mut World) {
             })
             .collect()
     };
+
     for (run, note) in escalating {
         mark_run_escalated(
             world,

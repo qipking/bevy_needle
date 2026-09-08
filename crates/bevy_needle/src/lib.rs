@@ -50,23 +50,28 @@
 //! | feature | 默认 | 说明 |
 //! |---|---|---|
 //! | `dlopen` | ✅ | 运行时 dlopen 引擎（常规桌面流程）。关闭后 crate 不链接 libloading，引擎必须经 `with_backend` 注入（如构建期链接）。
+//! | `escalate` | ❌ | 升级**能力层**（[`crate::escalate`]）：Driver 抽象 + Coordinator + 状态机，**无 rig 依赖**，MockDriver 即可跑通升级链路。
+//! | `rig` | ❌ | rig **实现层**（[`crate::rig`]）：RigDriver 适配（AgentRun 手动步进 + 工具桥），git-pinned rig-core/rig-run + tokio。⚠️ crates.io 拒绝带 git 依赖的发布，rig 0.43 前带此 feature 的版本不可直接 publish。
 //!
 //! # MSRV
 //!
 //! 本 crate 的 MSRV 为 **1.98**（`rust-version = "1.98"`）：跟随 rig-core 0.42
 //! 的 MSRV 预留升级路径（bevy 0.19 要求 ≥1.95）。
 //!
-//! # 升级路径（置信度门控 → Escalated）
+//! # 升级路径（置信度门控 → Driver 接管）
 //!
-//! 置信度门控触发时，低置信度调用**不执行**，run 走 `Escalating → Escalated`
-//! 正常收尾（`Failed` 只留给引擎/调度错误）。策略面 [`crate::policy::EscalationPolicy`]
-//! 无 cfg、无外部依赖；多档 rig driver 将在未来的 `escalate` feature 下接入，
-//! 届时 `Failed`/`Escalated` 语义不变，只多出"升级途中"的实际动作。
+//! 置信度门控触发时，低置信度调用**不执行**，run 走 `Escalating { tier }`；
+//! `escalate` feature 的 `DriverCoordinator` 按 [`crate::policy::EscalationPolicy`]
+//! 的档位表接管（`rig` feature 提供 RigDriver），无可用 driver 或 policy 禁止
+//! 时经 `finalize_escalations` 以 `Escalated` 正常收尾（不是失败）。`Failed`
+//! 只留给引擎/调度错误与「试过且坏了」的 driver 失败。
 
 pub mod agent;
 pub mod app;
 pub mod backend;
 pub mod diagnostics;
+#[cfg(feature = "escalate")]
+pub mod escalate;
 pub mod engine;
 pub mod engine_index;
 pub mod error;
@@ -77,6 +82,8 @@ pub mod ffi_loading_guard;
 pub mod needle_runtime;
 pub mod policy;
 pub mod prelude;
+#[cfg(feature = "rig")]
+pub mod rig;
 pub mod run;
 pub mod schema;
 pub mod session;

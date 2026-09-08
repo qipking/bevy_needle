@@ -20,7 +20,7 @@ pub use crate::{
     },
     engine_index::{rebuild_agent_tool_index, AgentToolIndex, AgentToolSnapshot},
     needle_runtime::{NeedleRuntime, RuntimeEvent, RuntimeJob, TurnJob},
-    policy::{EscalationPolicy, EscalationTarget, LazyModel, OnlineFallback},
+    policy::{EscalationPolicy, EscalationTarget, OnlineFallback},
     run::{
         cancel_runs, capture_run_requests, mark_run_completed, mark_run_escalated,
         mark_run_escalating, mark_run_failed, persist_cancelled_runs, persist_completed_runs,

@@ -36,10 +36,33 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = "0.1"
 
+# ── rig 实现层（`rig` feature；默认构建不编译不链接）─────────────────
+# rig-run 尚未发布到 crates.io（#2403 于 2026-08-22 合入 main，0.42.0 不含），
+# pin 到 #2403 的 merge commit。rig-core 必须与 rig-run 同 rev 同源：
+# 若此处用 registry 的 rig-core 0.42，会与 rig-run 内部 path 依赖的 git rig-core
+# 形成两个同名 crate，类型不互通（对规格 §9 草案的修正）。
+# 注意：该 rev 的 rig-core 已无 per-provider features（#2397 后 provider 拆出），
+# default-features=false 只关掉 derive。
+rig-core = { git = "https://github.com/0xPlaygrounds/rig", rev = "4be9599dfa09954ca408c8734ad68051b9614ea0", default-features = false, optional = true }
+rig-run = { git = "https://github.com/0xPlaygrounds/rig", rev = "4be9599dfa09954ca408c8734ad68051b9614ea0", optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync"], optional = true }
+
 [features]
 default = ["dlopen"]
 ## Load the engine at runtime through `libloading` (the usual desktop flow).
 dlopen = ["dep:libloading"]
+## 升级能力层（PR-B，`src/escalate/`）：Driver 抽象 + Coordinator + 状态机，
+## **无 rig 依赖**——可编译、可测（MockDriver 跑通升级链路）。
+escalate = []
+## rig 实现层（`src/rig/`）：RigDriver 适配（AgentRun 手动步进 + 工具桥）。
+## 依赖 git-pinned 上游。⚠️ crates.io 拒绝带 git 依赖的发布：rig-run 未上
+## crates.io 期间，带本 manifest 的版本不可直接 publish（0.2.0 已发布，不受影响）；
+## rig 0.43 发布后切回 registry 依赖即可恢复。
+rig = ["escalate", "dep:rig-core", "dep:rig-run", "dep:tokio"]
+# 注：规格 §9 草案的 `rig-local = ["rig", "rig-core?/ollama"]` 在 pinned rev 上
+# 不成立——#2397 之后 rig-core 已无 per-provider features（实测 available:
+# audio/derive/epub/image/pdf/rayon/test-utils）。本地模型档构造面待 rig 0.43
+# 的 provider 拆分形态落地后再补。
 
 # ── 教学示例（按编号即学习顺序）────────────────────────────────
 # 每个示例聚焦一个功能点，逐行注释，可独立运行：

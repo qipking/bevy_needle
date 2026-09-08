@@ -222,6 +222,8 @@ crates/bevy_needle/src/
 | feature | 默认 | 说明 |
 |---|---|---|
 | `dlopen` | ✅ | 运行时加载引擎（常规桌面）。关闭后不链接 libloading，必须 `with_backend` 注入 |
+| `escalate` | ❌ | 升级**能力层**：Driver 抽象 + Coordinator + 状态机，**无 rig 依赖**——MockDriver 即可跑通完整升级链路（无网络） |
+| `rig` | ❌ | rig **实现层**（含 `escalate`）：RigDriver 适配（AgentRun 手动步进 + 工具桥走 ECS pipeline）。⚠️ 上游 `rig-run` 未发布，pin 到 #2403 merge commit；crates.io 拒绝带 git 依赖的发布，发版前需临时摘除 pin |
 
 ## 致谢
 
