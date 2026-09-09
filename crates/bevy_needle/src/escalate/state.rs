@@ -3,17 +3,23 @@
 //! 规格 §4.4：`tier` 与 `attempt` 必须分开——「tier 1 重试 3 次」是
 //! `tier=1, attempt=3`，绝不能误表达成 `tier=4`。
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use bevy_ecs::prelude::Component;
 
-use super::driver::{AttemptHandle, DriverId, EscalationReason};
+use super::driver::{AttemptHandle, Driver, DriverId, EscalationReason};
 
 /// 一次升级流程的完整上下文（挂在 `RunStatus::Escalating` 的 run 实体上）。
 ///
 /// 注意（I8）：本组件承载全部升级上下文，`RunStatus::Escalating { tier }`
 /// 只保留生命周期标记，**不得**把 attempt/driver/error 塞进 `RunStatus` 变体。
-#[derive(Component, Clone, Debug)]
+///
+/// **I28（v14.2 补全）**：`resolved` 保存 attempt 创建时刻 resolve 到的
+/// 执行者实例（`Arc` 快照）——取消路径据此路由，**不再回查 registry**。
+/// 这样 registry 的后续 mutation（rebind / 重复注册被拒）都不影响
+/// 「取消必须针对同一个 resolved 实例」这条最强保证。
+#[derive(Component, Clone)]
 pub struct EscalationState {
     /// `EscalationPolicy.tiers` 下标（I10：下标，不是 rank）。
     pub tier: u32,
@@ -31,6 +37,25 @@ pub struct EscalationState {
     pub reason: EscalationReason,
     /// 在途 attempt 句柄（P0-3：放组件；协作式取消用）。
     pub handle: Option<AttemptHandle>,
+    /// attempt 创建时刻 resolve 到的执行者实例（I28：取消路由依据）。
+    /// 仅 `submit_tier` 设置；手插状态的调用方（测试）为 `None`。
+    pub resolved: Option<Arc<dyn Driver>>,
+}
+
+impl std::fmt::Debug for EscalationState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EscalationState")
+            .field("tier", &self.tier)
+            .field("driver_id", &self.driver_id)
+            .field("epoch", &self.epoch)
+            .field("attempt", &self.attempt)
+            .field("deadline", &self.deadline)
+            .field("started", &self.started)
+            .field("reason", &self.reason)
+            .field("handle", &self.handle)
+            .field("resolved", &self.resolved.as_ref().map(|d| d.id()))
+            .finish()
+    }
 }
 
 impl EscalationState {
@@ -50,6 +75,7 @@ impl EscalationState {
             started: now,
             reason,
             handle: None,
+            resolved: None,
         }
     }
 }

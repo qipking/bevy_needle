@@ -95,8 +95,6 @@ pub use app::{
     RunExecutionSystems, RunPreparation, RunPreparationSystems, Telemetry, ToolDispatchSystems,
 };
 pub use backend::{MockBackend, NeedleBackend};
-pub use engine::{
-    library_file_name, NeedleFunctionCall, NeedleResponse, DEFAULT_BUFFER_SIZE, ENGINE_VERSION,
-};
+pub use engine::{EngineGeneration, library_file_name, NeedleFunctionCall, NeedleResponse, DEFAULT_BUFFER_SIZE, ENGINE_VERSION,};
 pub use error::{NeedleError, NeedleRunError};
 pub use run::RunExecutedResults;

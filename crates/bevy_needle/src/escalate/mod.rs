@@ -32,5 +32,5 @@ pub use driver::{
     DriverProtocolError, EscalationReason,
 };
 pub use mock::{MockDriver, MockStep};
-pub use registry::DriverRegistry;
+pub use registry::{DriverRegistry, RegistryError};
 pub use state::EscalationState;

@@ -47,6 +47,7 @@ impl MockStep {
 /// 脚本化 driver：`submit` 立即把脚本里的下一条结果经 bus 回灌。
 pub struct MockDriver {
     id: DriverId,
+    capability: crate::policy::EscalationTarget,
     script: Mutex<Vec<MockStep>>,
     cursor: Mutex<usize>,
     default: MockStep,
@@ -55,9 +56,13 @@ pub struct MockDriver {
 
 impl MockDriver {
     /// 构造/执行入口（错误经 `Result` 返回，不 panic）。
+    ///
+    /// capability 默认 [`EscalationTarget::Local`]（I25 校验用）；
+    /// 其它档位用 [`MockDriver::with_capability`]。
     pub fn new(id: &'static str) -> Self {
         Self {
             id: DriverId(id),
+            capability: crate::policy::EscalationTarget::Local,
             script: Mutex::new(Vec::new()),
             cursor: Mutex::new(0),
             default: MockStep::Succeed {
@@ -65,6 +70,12 @@ impl MockDriver {
             },
             cancelled: AtomicU64::new(0),
         }
+    }
+
+    /// 设置能力类别（I25：须与绑定 tier 的 target 匹配）。
+    pub fn with_capability(mut self, capability: crate::policy::EscalationTarget) -> Self {
+        self.capability = capability;
+        self
     }
 
     /// 设置脚本（按序回放，耗尽后回放 `default`）。
@@ -88,6 +99,10 @@ impl MockDriver {
 impl Driver for MockDriver {
     fn id(&self) -> DriverId {
         self.id
+    }
+
+    fn capability(&self) -> crate::policy::EscalationTarget {
+        self.capability
     }
 
     fn submit(

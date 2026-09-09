@@ -66,6 +66,10 @@ pub struct DlopenBackend {
     ffi: crate::ffi::FfiEngine,
     bound: Mutex<Option<u64>>,
     buffer_size: usize,
+    /// 基础权重路径（needle3 权重不打包在库内；首次 bind 前必须加载）。
+    base_weights: std::path::PathBuf,
+    /// 基础权重是否已加载（进程内一次性；`needle_load` 不可卸载）。
+    base_loaded: Mutex<bool>,
 }
 
 #[cfg(feature = "dlopen")]
@@ -82,13 +86,56 @@ impl DlopenBackend {
     /// # Errors
     /// 库加载或符号解析失败。
     pub fn open(path: &std::path::Path, buffer_size: usize) -> Result<Self, NeedleError> {
+        Self::open_with_base_weights(path, crate::engine::default_base_weights_path(), buffer_size)
+    }
+
+    /// 打开引擎并指定基础权重（needle3 权重不打包在库内）。
+    ///
+    /// 打开时不加载——首次 [`NeedleBackend::bind`] 前才加载（与上游
+    /// `_bind → _load_base → needle_init` 顺序一致；`needle_load` 进程内
+    /// 一次性、不可卸载）。
+    pub fn open_with_base_weights(
+        path: &std::path::Path,
+        base_weights: std::path::PathBuf,
+        buffer_size: usize,
+    ) -> Result<Self, NeedleError> {
         Ok(Self {
             ffi: crate::ffi::FfiEngine::open(path)?,
             bound: Mutex::new(None),
             buffer_size: buffer_size.max(1024),
+            base_weights,
+            base_loaded: Mutex::new(false),
         })
     }
+
+    /// 文本 → f32 向量（needle3 的 `needle_embed`，两段式）。
+    ///
+    /// # Errors
+    /// 引擎调用失败。
+    pub fn embed(&self, text: &str) -> Result<Vec<f32>, NeedleError> {
+        self.ffi.embed(text)
+    }
+
+    /// 首次 bind 前加载基础权重（进程内一次；与上游
+    /// `_bind → _load_base → needle_init` 顺序一致）。
+    fn ensure_base_weights(&self) -> Result<(), NeedleError> {
+        let mut loaded = self.base_loaded.lock().expect("base_loaded poisoned");
+        if *loaded {
+            return Ok(());
+        }
+        let blob =
+            std::fs::read(&self.base_weights).map_err(|_source| NeedleError::EngineNotFound {
+                tried: format!(
+                    "{} (needle3 基础权重缺失：可用 EngineConfig::with_base_weights 显式指定)",
+                    self.base_weights.display()
+                ),
+            })?;
+        self.ffi.load_weights(&blob)?;
+        *loaded = true;
+        Ok(())
+    }
 }
+
 
 #[cfg(feature = "dlopen")]
 impl NeedleBackend for DlopenBackend {
@@ -105,6 +152,8 @@ impl NeedleBackend for DlopenBackend {
                 return Ok(());
             }
         }
+        // gen3：基础权重必须在 needle_init 之前加载（上游 _bind → _load_base → init）
+        self.ensure_base_weights()?;
         let index = tool_index.map(|p| p.display().to_string());
         self.ffi.init(system, tools_json, index.as_deref())?;
         *self.bound.lock().expect("bound poisoned") = Some(signature);

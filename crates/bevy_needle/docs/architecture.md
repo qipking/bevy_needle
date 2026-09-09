@@ -1,5 +1,14 @@
 # crates/bevy_needle 核心实现解析
 
+> **架构定位（2026-09-22 维护者裁决）**：`bevy_needle` = Needle 的 Bevy
+> integration + **resolution/escalation layer**。五段调度骨架（Preparation /
+> Execution / Commit / ToolDispatch / Telemetry）借自 `bevy_rig` 谱系，但
+> **`RunResolution` 是本项目原创**——置信度门控、tier 档位、fallback 上限、
+> epoch、跨 Driver 升级是 Needle 专属决策语义。通用 Agent runtime 由
+> Rig / rig-ecs（上游已合入 main）承载；rig-ecs 是 handoff 目标而非「另一个
+> Driver 实现」，POC 必须同 World 不嵌套。`DriverRegistry` 能力面已冻结
+> （§19.4）；`EscalationPolicy` 含 tier 与 capability ceiling，不在任何删除树里。
+
 本文解释插件每个模块的职责、关键设计决策与不变量（invariant）。读完应当能
 回答：一轮指令从消息到 UI 效果经历了什么、为什么这样做、哪些改动会破坏正确性。
 
@@ -254,37 +263,77 @@ RunExecution 写入的（Bevy 消息双缓冲）—— 单帧延迟，换来了�
   `rank()` 只用于 `fallback` 上限判断。
 - `below_threshold` 是 f64/f32 cast 的唯一允许入口（比较收敛，不散落 systems）。
 
-## 8b. escalate/ + rig/ — Driver 契约与 rig 适配（PR-B）
+## 8b. escalate/ + rig/ — Driver 契约与 rig 适配（PR-B，v14.3）
 
 ```text
 EscalationPolicy（纯决策）──tier──► DriverCoordinator（escalate 层）
                                         │ 只认 DriverId（I6）
                                         ▼
-                                  DriverRegistry ──► Driver::submit（无 poll，I16）
+                                  DriverRegistry（两层：id→实例 + tier→id，事务化）
+                                        │ resolve → Arc 快照（I28 attempt-stable）
+                                        ▼
+                                  Driver::submit（无 poll，I16）
                                                         │
                                         ┌───────────────┴──────────────┐
                                         ▼                              ▼
-                                  MockDriver（脚本化）           RigDriver（rig 层）
+                                  MockDriver（脚本化）        RigDriver<M>（rig 层，泛型模型——
+                                                                        CompletionModel 是 RPITIT 不可 dyn，I24）
                                                                         │
-                                                          RigDriverState { AgentRun }  ← ECS 组件（I4）
+                                                RigDriverState { AgentRun, epoch }  ← ECS 组件（I4/P0-5）
                                                                         │
-                                                        CallModel（异步模型调用，worker 回灌）
-                                                        CallTools（→ ECS ToolInvocation，I3）
+                                                CallModel ──jobs──► worker 线程（唯一 async 点，I22）
+                                                completion().await → CompletionResponse → ModelTurn
+                                                ◄── RigModelInbox<M> 回灌（唯一注入点，I26）
+                                                CallTools（→ ECS ToolInvocation，I3）
                                                                         │
                                                               DriverEventBus（channel）
                                                                         │
                                                               ECS drain → 终态规则（§6/§7）
 ```
 
-不变量速查（规格 §1，违反即不合格）：主线程永不 block_on（I1）；工具执行必在
-ECS（I3）；Bevy Run ⊃ AgentRun（I4）；RunStatus 只表生命周期、上下文在
-`EscalationState`（I8）；`finalize_escalations` 是安全阀不是业务逻辑（I9）；
-tier 是下标不是 rank（I10）；Driver 无 poll 无 Future（I16）；异步 job 携带
-`(run, epoch)`、stale 丢弃（I17）；call_id 严格往返禁止 mint（I18）；
-preresolved 不进 ECS（I19）；工具结果按原始顺序回喂（I20）。
+### Registry 事务语义（I29，v14.3 统一判定核心）
 
-终态归属（规格 §6）：「没试/不许试」→ `Escalated`；「试过且坏了」→ `Failed`；
-「用户喊停」→ `Cancelled`。
+| API | 语义 |
+|---|---|
+| `register(driver)` | 新 id 注册；重复 → `DuplicateDriverId`（**绝不覆盖**——覆盖会偷走执行权） |
+| `bind_tier(tier, id)` | 未绑 → 绑定；已绑 → `DuplicateTierBinding`；**不做幂等** |
+| `rebind_tier(tier, id)` | 唯一显式覆盖（P3 动态 provider） |
+| `register_for_tier(d, tier)` | 便捷幂等组合（同实例同 tier → no-op；同实例新 tier → 仅绑定；新 driver+占用 tier → 整体失败零变更） |
+| `precheck_register_and_bind(id, tiers)` | 多 tier 整体预检；含**入参自身重复检查**（`[0,0]` → `DuplicateTierArgument`） |
+
+`register_for_tier` 与 `precheck_register_and_bind` 共用私有判定核心
+`judge_register_and_bind`——单一事实来源，杜绝「precheck 说 OK 而 mutation
+说 Err」的结构性漂移。`register_with_model(app, DriverId, EscalationTarget,
+Arc<M>, &[tiers])` 的 preflight 先于一切副作用（inbox spawn / 身份登记 /
+系统注册都在校验之后）——失败即整体零残留。
+
+### per-M 身份隔离（I31/I32）
+
+`RigDriverIds<M>`（按模型类型隔离的 `HashSet<DriverId>`）决定
+`ensure_states::<M>()` / `step_all::<M>()` 认领哪些 run——同一 `M` 的多个
+DriverId 共享一个 `RigModelInbox<M>`（一个 worker）与一个步进系统；
+一个 Driver 实例可绑多个 tier。没有这套隔离，两个 rig 系统会抢同一个
+state（CallModel 双发）。
+
+### 不变量速查（规格 §1，违反即不合格）
+
+主线程永不 block_on（I1）；工具执行必在 ECS（I3）；Bevy Run ⊃ AgentRun
+（I4）；RunStatus 只表生命周期、上下文在 `EscalationState`（I8）；
+`finalize_escalations` 是安全阀不是业务逻辑（I9）；tier 是下标不是 rank
+（I10）；Driver 无 poll 无 Future（I16）；异步 job 携带 `(run, epoch)`、
+stale 丢弃（I17）；call_id 严格往返禁止 mint（I18）；preresolved 不进 ECS
+（I19）；工具结果按原始顺序回喂（I20）；主路径与升级路径不合并（I23）；
+CompletionModel 不可 dyn、不渗透 Driver trait（I24）；capability 显式声明
++ 注册期校验（I25）；RigModelInbox 是模型回合唯一注入点（I26）；worker
+必须对一切请求回执、禁止静默丢弃（I27）；attempt-stable resolve + 取消
+路由走实例快照（I28）；身份归实例、重复显式拒绝、事务性（I29）；禁止
+依赖固定身份常量（I30）；per-M 身份集合（I31）；一个 M ↔ 一个 inbox +
+一个 system、一个实例可绑多 tier（I32）。
+
+终态归属（规格 §6，按「是否发生过 attempt」区分）：从未发生 attempt
+（无 driver / policy 不许 / capability 不匹配）→ `Escalated`；某档实际
+执行失败后 policy 拦下一档 → `Failed`（试过且坏了）；用户喊停 →
+`Cancelled`（epoch 失效，旧响应不复活）。
 
 ## 9-10. agent / run / session
 
@@ -339,3 +388,11 @@ preresolved 不进 ECS（I19）；工具结果按原始顺序回喂（I20）。
 - 不做引擎侧并发：F1 决定了单线程串行是唯一正确模型。
 - 不缓存多套工具集的"热切换"：F3 决定切换必然重置会话，缓存无意义。
 - `CancelRun` 不能中断在途解码：引擎不可中断；取消语义 = 丢弃结果。
+- rig 路径同理：`Driver::cancel` 是协作式——模型调用不可中断（candle load
+  进 blocking pool 后 drop future 不停），靠 epoch 失效丢弃在途回执（I17）。
+- rig 路径的 CallModel 真实执行点在 worker（I22）；`RigModelInbox<M>` 是
+  模型回合唯一注入点（I26），外部没有任何代码能触达
+  `AgentRun::model_response`。
+- 多模型注册的正确姿势：身份/能力显式声明（I30）+ Registry 事务语义
+  （I29）——重复 id / tier 冲突 / tiers 入参重复全部显式报错，绝不静默
+  覆盖（覆盖会偷走执行权，v14 审查抓到的真 bug）。

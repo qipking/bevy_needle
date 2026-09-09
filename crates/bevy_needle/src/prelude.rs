@@ -15,8 +15,8 @@ pub use crate::{
     },
     diagnostics::RuntimeDiagnostics,
     engine::{
-        discover_library, library_file_name, NeedleFunctionCall, NeedleResponse,
-        DEFAULT_BUFFER_SIZE, ENGINE_VERSION,
+        discover_library, library_file_name, EngineGeneration, NeedleFunctionCall,
+        NeedleResponse, DEFAULT_BUFFER_SIZE, ENGINE_VERSION,
     },
     engine_index::{rebuild_agent_tool_index, AgentToolIndex, AgentToolSnapshot},
     needle_runtime::{NeedleRuntime, RuntimeEvent, RuntimeJob, TurnJob},
@@ -48,3 +48,4 @@ pub use crate::{
         ToolInvocationStatus, ToolInvocationTurn, ToolKind, ToolOutput, ToolRegistry, ToolSpec,
     },
 };
+

@@ -5,10 +5,14 @@
 [![License](https://img.shields.io/crates/l/bevy_needle)](https://github.com/qipking/bevy_needle#license)
 [![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://github.com/qipking/bevy_needle)
 
-**Bevy ECS 中的本地工具调用模型。** 把 [needle2](https://github.com/cactus-compute/needle)
-—— 14 MB、45M 参数、纯本地推理的工具调用引擎 —— 装进 Bevy 的实体组件系统：
-provider/agent/tool/session/run 全是实体与组件，指令解析与函数调用就是几个普通系统。
-封装精神对齐 [`bevy_rig`](https://crates.io/crates/bevy_rig)。MSRV：**Rust 1.98+**。
+**Bevy ECS 中的本地工具调用模型 + 推理升级层。** 把 [needle3](https://github.com/cactus-compute/needle)
+（上游 v3.0.x，~35 MB 基础权重 + 3072 维文本向量，纯本地推理的工具调用引擎）
+装进 Bevy 的实体组件系统：
+tool/session/run 全是实体与组件，指令解析与函数调用就是几个普通系统。
+**架构定位**：`bevy_needle` = Needle 的 Bevy integration + **resolution/escalation
+layer**（置信度门控、tier 档位、fallback 上限、跨 Driver 升级）；通用 Agent
+runtime 可由 Rig / rig-ecs 承载（见下文[升级](#升级escalation置信度不足时换更强推理)）。
+MSRV：**Rust 1.98+**。
 
 ```
 玩家输入 ──► RunAgent 消息 ──► 工作线程 needle_complete（约束解码，JSON 必合法）
@@ -23,12 +27,16 @@ provider/agent/tool/session/run 全是实体与组件，指令解析与函数调
 - **引擎即插即用**：缺失引擎不是编译错误也不是 panic —— run 会以可操作的原因失败；
   也可用 `with_backend` 注入任意实现（测试用 mock、嵌入式构建期链接等）。
 - **可测试**：`MockBackend` 脚本化信封，完整轮次循环在 CI 上无引擎跑通（10 项测试）。
+- **升级（Escalation）**：置信度不足时把推理责任交给另一个 Driver——本地小模型
+  失败后自动升到更强模型；核心 crate **永远不知道 rig 是什么**（默认构建零 rig /
+  零 tokio，见[升级](#升级escalation置信度不足时换更强推理)）。
 
 ## 目录
 
 - [快速上手](#快速上手)
 - [工具声明（解码语法的艺术）](#工具声明)
 - [运行生命周期](#运行生命周期)
+- [升级（Escalation）](#升级escalation置信度不足时换更强推理)
 - [引擎获取与部署](#引擎获取与部署)
 - [面向 45M 模型的工具设计经验](#面向-45m-模型的工具设计经验)
 - [演示项目：文字操控 univis_ui](#演示项目univis_needle_demo)
@@ -38,7 +46,7 @@ provider/agent/tool/session/run 全是实体与组件，指令解析与函数调
 
 ```toml
 [dependencies]
-bevy_needle = "0.1"
+bevy_needle = "0.2"   # 0.3.0 发布后可跟进（升级能力见下文）
 ```
 
 ```rust
@@ -77,7 +85,7 @@ app.world_mut().write_message(RunAgent::new(handles.agent, "set volume to 80"));
 
 ```bash
 cargo run  -p bevy_needle --example 01_anatomy   # 最小闭环：一次指令的完整旅程（mock，无引擎）
-cargo test -p bevy_needle                        # 21 项测试，无引擎即可全量运行
+cargo test -p bevy_needle                        # 28 项测试，无引擎即可全量运行
 ```
 
 ### 教学示例（编号即学习顺序，逐行注释，覆盖全部功能点）
@@ -140,15 +148,155 @@ Telemetry       诊断刷新钩子
   切换时在轮次边界重绑（`needle_init` 会重置 KV，这是引擎语义）。
 - **逻辑取消**：`CancelRun` 丢弃在途结果（引擎调用本身不可中断）。
 
+## 升级（Escalation）：置信度不足时换更强推理
+
+0.2.0 把「升级」钉成契约：**低于置信度门限的调用不执行**，run 进入
+`Escalating`（中间态）。0.3 补上「谁来接管」——Driver 抽象：
+
+```text
+置信度门控 → Escalating{tier} → DriverCoordinator → DriverRegistry（tier → DriverId）
+                                                        │
+                                    ┌───────────────────┴───────────────────┐
+                                    ▼                                       ▼
+                            MockDriver（escalate）                  RigDriver<M>（rig）
+                            脚本化，无 rig 无网络                     AgentRun 手动步进
+                                    │                                       │
+                                    └──────► DriverEvent 回灌（channel，无 poll）◄──────┘
+                                                        │
+                          Escalating 之外只有三个出口：Completed / 下一档 / Failed
+                          （从未发生过 attempt → Escalated；试过且坏了 → Failed）
+```
+
+分层：`escalate` = **能力层**（状态机 + Driver 抽象 + Coordinator，无 rig 依赖）；
+`rig` = **实现层**（RigDriver 把 rig-run 的 `AgentRun` 接进来，工具调用强制走
+ECS pipeline）。`policy.rs`（`EscalationPolicy`）无 cfg 无 rig 依赖——
+"要不要联网"在没有 rig 的时候也能决定。
+
+### 用法 A：MockDriver 跑通完整升级链路（`escalate` feature，无 rig 无网络）
+
+```rust
+use std::sync::Arc;
+use bevy_needle::escalate::{DriverId, DriverRegistry, MockDriver, MockStep};
+use bevy_needle::prelude::*;
+
+// ① 策略：纯决策——是否启用、能力上限、档位表
+app.world_mut().insert_resource(
+    EscalationPolicy::new()
+        .enabled()
+        .with_fallback(OnlineFallback::LocalModelOnly)  // 允许 Local，拒绝 Remote
+        .with_tier(EscalationTarget::Local),            // tier = tiers 的下标（不是 rank！）
+);
+
+// ② tier 0 → MockDriver：低置信度 run 会被它接管并以脚本输出完成
+app.world_mut().resource_mut::<DriverRegistry>().register_for_tier(
+    Arc::new(MockDriver::new("mock").with_script(vec![
+        MockStep::succeed("escalated by mock"),
+    ])),
+    0,
+).expect("driver id 唯一");
+```
+
+四百帧内：低置信度调用 → `Escalating{0}` → coordinator 提交 → mock 回灌
+`Succeeded` → run `Completed`，文本即脚本输出——且低置信度的工具调用
+**从未执行**（门控契约）。
+
+### 用法 B：RigDriver 接入真实模型（`rig` feature）
+
+```rust
+use bevy_needle::escalate::DriverId;
+use bevy_needle::policy::EscalationTarget;
+use bevy_needle::rig::register_with_model;
+
+// 启动期构造模型——秒级加载（candle 权重）不进升级路径；构造失败就不注册，
+// 该 tier 无 driver → 正常收尾 Escalated（"没试"），绝不是 Failed。
+let candle: Arc<MyCandleModel> = load_candle_model_at_startup();
+
+// 身份与能力都是显式声明（I30/I25）：
+//   - DriverId 重复注册 → RegistryError::DuplicateDriverId（绝不静默覆盖）；
+//   - capability 必须与所绑 tier 的 EscalationTarget 一致（Remote 模型声明
+//     Local 会让该 tier 永远不可用——注册期就拦下，不是运行期惊喜）；
+//   - 一个实例可绑多个 tier；同一 M 多次注册复用同一 inbox/worker（I32）。
+register_with_model(
+    &mut app,
+    DriverId("rig-candle"),
+    EscalationTarget::Local,
+    candle,
+    &[0, 1],     // tier 0 与 1 都由这个模型接管
+)?;
+```
+
+多模型多档（I10 经典反例）——**两个 Local 档用 rank 推 tier 会坍缩**，
+按档位下标绑定即可：
+
+```rust
+register_with_model(&mut app, DriverId("rig-a"), EscalationTarget::Local,  candle_a, &[0])?;
+register_with_model(&mut app, DriverId("rig-b"), EscalationTarget::Local,  candle_b, &[1])?;
+register_with_model(&mut app, DriverId("rig-c"), EscalationTarget::Remote, openai,    &[2])?;
+```
+
+Registry API（I29 事务语义）：
+
+| API | 语义 |
+|---|---|
+| `register(driver)` | 新 id 注册；重复 id → `DuplicateDriverId`（**绝不覆盖**） |
+| `bind_tier(tier, id)` | 绑定；该 tier 已绑别的 id → `DuplicateTierBinding`；不做幂等 |
+| `rebind_tier(tier, id)` | 唯一显式覆盖路径（动态换 driver 用） |
+| `register_for_tier(d, tier)` | 便捷组合，幂等：同实例同 tier → no-op；同实例新 tier → 仅绑定 |
+| `precheck_register_and_bind` | 整体预检（含 tiers 入参自身重复检查 `[0,0]` → `DuplicateTierArgument`）——失败零残留 |
+
+取消语义（I28）：`CancelRun` 后取消路由到 **attempt 创建时刻 resolve 的执行者
+实例**（`EscalationState.resolved` 快照），registry 后续 rebind 不劫持在途
+attempt——旧响应也因 epoch 失效被丢弃。
+
+### 终态归属（一句话判据）
+
+> **「没试 / 不许试」→ `Escalated`；「试过且坏了」→ `Failed`；「用户喊停」→ `Cancelled`。**
+
+| 情形 | 终态 |
+|---|---|
+| 无可用 driver / policy 不许 / capability 不匹配（未发生 attempt） | `Escalated`（正常收尾，不是失败） |
+| driver 执行失败 / 模型错误 / 档位耗尽且末档执行过 | `Failed` |
+| `CancelRun` | `Cancelled`（epoch 失效，旧响应不复活） |
+
+### 架构边界（维护者定位，2026-09-22）
+
+`bevy_needle` **不是** Rig 的另一个 Agent runtime。五段调度骨架借自 `bevy_rig`，
+但 **`RunResolution` 是本项目真正的原创边界**——置信度、tier、fallback 上限、
+epoch、升级 handoff 是 Needle 专属决策语义，通用 Agent runtime 由 Rig /
+rig-ecs 承载。相应地：
+
+- `rig-ecs`（上游已合入 main）是**handoff 目标 / Agent runtime**，不是「另一个
+  Driver 实现」——未来关系是 `RunResolution → handoff → rig-ecs`，且必须在
+  **同一个 Bevy World**（不嵌套第二个 App）；
+- `DriverRegistry` 能力面已冻结：修 bug/补测试可以，remote/human driver、
+  provider discovery 全部等 `Needle → Rig-ECS Handoff POC`（含 capability
+  ceiling / 工具免重注册 / Cancel 语义映射 / pin 数四条硬验收）结论后再议；
+- **`EscalationPolicy`（含 tier 与 capability ceiling）不在任何删除树里**——
+  对分发到玩家机器的游戏，`LocalModelOnly` 是隐私红线，不是路由便利。
+
+设计全景（不变量 I1–I32、RPITIT 定案、判定核心同源等）见
+[`crates/bevy_needle/docs/architecture.md`](crates/bevy_needle/docs/architecture.md)
+与执行规格 [`crates/bevy_needle/docs/rig-driver-升级计划.md`](crates/bevy_needle/docs/rig-driver-升级计划.md)
+（§18 上游核定 / §19 handoff 提案裁决 / §17 阶段总结）。
+
 ## 引擎获取与部署
 
-搜索顺序（`discover_library`）：
+搜索顺序（`discover_library`，needle3 代际）：
 
 1. `BevyNeedlePlugin::new(EngineConfig::with_library(path))` 显式路径（**权威**：缺失即报错）
 2. 环境变量 `NEEDLE_LIB_PATH`
-3. 仓库内 `third_party/needle/<version>/libneedle.so`（随发布包提供，或从官方 wheel 离线解出）
-4. 可执行文件同目录
-5. `~/.cache/cactus-needle/<version>/`（与 Python 绑定共用缓存）
+3. `NEEDLE_ENGINE_DIR` 目录下的 `libneedle3.so`
+4. 仓库内 `third_party/needle/3.0.1/libneedle3.so`（随仓库分发；获取脚本见下）
+5. 可执行文件同目录
+6. `~/.cache/cactus-needle/v3/3.0.1/`（与 Python 绑定 v3 分轨共用）
+
+获取 needle3 产物（库 1.2MB 随仓库分发；基础权重 `needle3.cact` 35MB 不进
+git，用脚本拉取）：
+
+```bash
+third_party/needle/3.0.1/fetch.sh
+# OK third_party/needle/3.0.1/needle3.cact (35335380 bytes)
+```
 
 也可以注入自己的后端：
 
@@ -171,6 +319,30 @@ app.add_plugins(BevyNeedlePlugin::with_backend(MyEmbeddedBackend::new()));
 ```rust
 BevyNeedlePlugin::new(EngineConfig::with_weights("tuned.cact"))
 ```
+
+### needle3（唯一维护代际）
+
+本 crate **只维护 needle3**（上游 v3.0.x；needle2 已停止支持）。needle3 与
+needle2 的引擎面差异：库文件名带代际后缀（`libneedle3.so`）、缓存按代际分轨
+（`~/.cache/cactus-needle/v3/3.0.1/`）、**基础权重 `needle3.cact` 不打包进
+库**（首次 bind 前自动 `needle_load`，在 `needle_init` 之前——与上游
+`_bind → _load_base → needle_init` 顺序一致）、新增 `needle_embed` 符号
+（文本 → 3072 维 f32 向量）与 confidence head。`.cact` 档案带 generation
+tag——v3 权重与 v2 引擎互不兼容。
+
+```rust
+use bevy_needle::prelude::*;
+
+BevyNeedlePlugin::new(
+    EngineConfig::with_library("third_party/needle/3.0.1/libneedle3.so")
+        .with_base_weights("needle3.cact"),   // 缺省走发现路径（third_party → 缓存分轨）
+);
+```
+
+needle3 专属能力：`backend.embed(text)` 返回 3072 维 f32 向量；
+`confidence` 可能为 `null`（模型没有 confidence head 时），本 crate 的
+`Option<f64>` 天然兼容——门控按「无置信度 = 不触发」处理。信封结构
+（`type` / `function_calls` / 工具 JSON）与 needle2 完全一致，工具层零迁移。
 
 ## 面向 45M 模型的工具设计经验
 
@@ -214,21 +386,30 @@ crates/bevy_needle/src/
 ├── engine.rs            信封类型 / 版本常量 / 库发现（100% 安全代码）
 ├── engine_index.rs      agent 快照：system + 工具集 JSON + FNV 签名（变更驱动重绑）
 ├── needle_runtime.rs    工作线程执行桥（TurnJob Arc<str> 零拷贝）
-├── app.rs               BevyNeedlePlugin：五段调度 + run 状态机 + 优雅降级
+├── app.rs               BevyNeedlePlugin：五段调度 + run 状态机 + finalize 安全阀
 ├── tool.rs              工具/调用实体 + 纯函数 handler 分发
+├── policy.rs            EscalationPolicy（无 cfg 无 rig：要不要联网在无 rig 时也能决策）
+├── escalate/            升级能力层（feature=escalate）：Driver 契约 + Coordinator + MockDriver
+├── rig/                 rig 实现层（feature=rig）：RigDriver<M> + AgentRun 步进 + 工具桥
 ├── run.rs / session.rs / agent.rs / schema.rs / diagnostics.rs
 ```
+
+深度解析见 [`crates/bevy_needle/docs/architecture.md`](crates/bevy_needle/docs/architecture.md)；
+Driver/升级执行规格（不变量 I1–I32、六版本收敛路径）见
+[`crates/bevy_needle/docs/rig-driver-升级计划.md`](crates/bevy_needle/docs/rig-driver-升级计划.md)。
 
 | feature | 默认 | 说明 |
 |---|---|---|
 | `dlopen` | ✅ | 运行时加载引擎（常规桌面）。关闭后不链接 libloading，必须 `with_backend` 注入 |
-| `escalate` | ❌ | 升级**能力层**：Driver 抽象 + Coordinator + 状态机，**无 rig 依赖**——MockDriver 即可跑通完整升级链路（无网络） |
-| `rig` | ❌ | rig **实现层**（含 `escalate`）：RigDriver 适配（AgentRun 手动步进 + 工具桥走 ECS pipeline）。⚠️ 上游 `rig-run` 未发布，pin 到 #2403 merge commit；crates.io 拒绝带 git 依赖的发布，发版前需临时摘除 pin |
+| `escalate` | ❌ | 升级**能力层**：`EscalationPolicy` + Driver 抽象 + `DriverCoordinator` + 事务化 `DriverRegistry`（重复 id/绑零变体拒绝），**无 rig 依赖**——`MockDriver` 无 rig 无网络跑通完整升级链路 |
+| `rig` | ❌ | rig **实现层**（含 `escalate`）：`RigDriver<M>` 泛型适配（`AgentRun` 手动步进、工具桥强制走 ECS pipeline、worker 侧唯一 async 点）。⚠️ 上游 `rig-run` 未发布，pin 到 #2403 merge commit；crates.io 拒绝带 git 依赖的发布，0.3.0 发版需临时摘除 pin |
 
 ## 致谢
 
 - [needle2 / cactus](https://github.com/cactus-compute/needle) —— 14MB 的本地工具调用引擎与 C ABI 设计
-- [bevy_rig](https://crates.io/crates/bevy_rig) —— ECS 集成形态的参照系
+- [bevy_rig](https://crates.io/crates/bevy_rig) —— 分段调度骨架的历史来源
+  （`RunResolution` 与升级层是本项目原创；通用 Agent runtime 的现代形态由上游
+  rig-ecs 正规化）
 - [bevy_needle2](../bevy_needle2) —— 本项目的早期姊妹实现；其 NonSend 主线程设计、
   MockBackend 可测试性思想与 unsafe 纪律已被吸收进本仓库
 - [univis_ui](https://github.com/univiseditor/univis_ui) —— 演示项目的 UI 框架

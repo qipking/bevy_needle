@@ -6,6 +6,29 @@
 ## [Unreleased]
 
 ### Added
+- **breaking：停止支持 needle2，只维护 needle3（v14.5）**：
+  - `EngineGeneration` 收敛为单一 `Gen3`（枚举保留给未来代际）；
+    `EngineConfig` 去掉 `with_generation`，新增 `with_base_weights`
+    （needle3 权重不打包在库内，首次 bind 前自动 `needle_load`）；
+  - 库文件名 `libneedle3.so`、缓存分轨 `~/.cache/cactus-needle/v3/3.0.1/`、
+    `needle_embed` 符号为必需（文本 → 3072 维向量 `backend.embed()`）；
+  - 真机全链冒烟转正为测试（`needle3_real_smoke`：open → load base →
+    init → complete → embed → reset，third_party/needle/3.0.1/ 有产物时跑）；
+  - 迁移：`with_generation(Gen3)` 调用删除即可；`.cact` 权重必须用
+    needle3 版（generation tag 校验，跨代不兼容）。
+- **needle3 代际适配（v14.4，上游 needle v3.0.x 已发布）**：
+  - `EngineGeneration`（Gen2/Gen3）+ `EngineConfig::with_generation` /
+    `with_base_weights`——默认 Gen2，0.2.x 行为完全不变；
+  - Gen3：库文件名带代际后缀（`libneedle3.so`）、缓存分轨
+    （`~/.cache/cactus-needle/v3/3.0.1/`）、**首次 bind 前自动加载基础权重
+    `needle3.cact`**（base → 调优，均不可卸载；缺失报可操作错误并提示
+    `with_base_weights`）、新增 `needle_embed` 可选符号与 `embed()` 文本向量
+    API、支持 confidence head（v3 的 `confidence` 可为 null，既有
+    `Option<f64>` 天然兼容）；
+  - `.cact` 档案带 generation tag——v3 权重不能喂 v2 引擎，反之亦然
+    （上游按 tag 分轨，本 crate 靠显式代际声明避免误路由）；
+  - 发现路径代际感知：`discover_library_for(gen, path)`；
+  - 测试 +5：代际常量/库文件名/缓存分轨/打开响亮失败/Gen2 默认不变。
 - **PR-B：Driver 契约与 rig 适配**（规格 v5；feature 分层 `escalate`=能力 / `rig`=实现）：
   - **升级能力层** `src/escalate/`（`escalate` feature，**无 rig 依赖**）：
     - `driver.rs`：`Driver` trait（**无 poll**——submit/cancel + channel 回灌）、
@@ -43,6 +66,73 @@
     （handler 执行、call_id 往返）→ 结果按序回喂 → 下一轮 → Done → Completed。
 - `EscalationPolicy::below_threshold`：f64/f32 cast 的**唯一允许入口**
   （规格 §10），app.rs 门控改走它。
+
+### Fixed
+- **v14.3（第二轮外部复核落地）**：
+  - `RegistryError::DuplicateTierArgument`：`register_with_model` 的 tiers
+    入参自身重复（如 `[0, 0]`）现在显式报错——此前 precheck 通过而 mutation
+    中途失败会留下半注册状态（外部审阅实证的反例）；
+  - **语义单一事实来源**：抽出 `judge_register_and_bind` 判定核心，
+    `register_for_tier` 与 `precheck_register_and_bind` 共用同一判定，
+    杜绝「precheck 说 OK / mutation 说 Err」的结构性漂移；
+  - 三层测试：registry 单测（`[0,0]` 零变更 / 语义一致性）+ 集成
+    （`[0,0]` 零残留：driver/tier/inbox/身份集合全不登记）；
+  - 事实澄清：v14.2 的 `register_for_tier` 事务性与幂等 no-op **已实现**
+    （`git show` + 实证测试；审阅引用的半注册代码在提交中不存在，
+    系 GitHub raw 缓存 serving 旧版）。
+- **v14.2（外部审阅修复，commit 9c0b28f5 逐项复核后）**：
+  - **组合注册事务性（P0-1）**：`register_for_tier` 改为校验先行（身份冲突与
+    tier 冲突全部通过才发生任何变更，语义表见 API 文档）；新增
+    `DriverRegistry::precheck_register_and_bind`，`register_with_model` 的
+    preflight 提前到一切副作用之前（inbox spawn / 身份登记 / 系统注册都在
+    校验之后）——失败 = 整体零残留。专项测试覆盖「新 driver + 已绑 tier +
+    fresh tier」场景（driver 不残留、fresh tier 不绑、原绑定不动、身份集合
+    不登记）。
+  - **I28 取消侧补全（P1）**：`EscalationState.resolved` 保存 attempt 创建
+    时刻 resolve 的执行者实例（`Arc` 快照），`cancel_inflight` 据此路由、
+    **不再回查 registry**——rebind 后取消也不会误路由。`RigDriver` 增加每
+    实例取消计数（可观测依据）；专项测试：在途 + rebind tier0 → 取消 →
+    快照实例计数 +1、当前绑定实例零误伤。
+  - **T3-A 补两档真执行（P0-2）**：同 `M` 两 DriverId 下两个 run 分别真实
+    执行 tier 0（rig-a）与 tier 1（rig-b），按 `driver_id` 断言身份与模型
+    调用次数（此前只执行了 tier 0，两档覆盖名不副实）。
+  - 文档：CHANGELOG/规格中的旧 `register_with_model` 签名清理。
+- **breaking（升级路径多 driver 正确性，规格 v14 §16）**：`RigDriver::id()` /
+  `capability()` 从固定常量改为**构造期字段**（`register_with_model` 显式传
+  `DriverId` + `EscalationTarget`）——旧实现下多模型注册互相覆盖（后者偷走
+  前者的执行权）、Remote 模型永远注册不上（capability 硬编码 Local）、
+  `ensure_states` 按常量认领导致「注册正确、执行不发生」的假绿。
+  同批修复 tier 推进时旧 `RigDriverState` 未随 attempt 重建的问题（epoch
+  驱动重建，P0-5 补全）。
+- `DriverRegistry` 身份冲突显式化（I29）：`register` 重复 id / `bind_tier`
+  重复绑定现在返回 `RegistryError` 而非静默覆盖；`rebind_tier` 是唯一显式
+  覆盖路径；`register_for_tier` 对同一实例幂等。
+
+### Added
+- **`RigDriverIds<M>`（I31）**：按模型类型隔离的 rig 身份集合——
+  `ensure_states` / `step_all` 只认领/步进本 M 已登记身份的 run；
+  **I32**：同一 `M` 复用同一 inbox/worker/步进系统，一个 Driver 实例可绑多 tier。
+- **I28（attempt-stable）**：`resolve` 返回 `Arc` 克隆，registry 后续 mutation
+  不影响在途 attempt（门闩模型测试验证在途执行者不被 rebind 劫持）。
+- 多模型升级链路 e2e（规格 §16.5 红测转绿）：`FakeCandleModel`（Local，脚本
+  失败）→ tier1 `FakeOpenAiModel`（Remote，成功），断言**执行者身份**
+  （两模型各恰被调用 1 次 + 最终 `driver_id == "rig-openai"`）。
+- **CompletionModel 接线**（规格 v9 §13）：worker 侧唯一 async 点
+  （`RigModelInbox<M>::spawn` 线程 + `RigRuntime::block_on`）执行
+  `model.completion(req).await`；`CompletionResponse → ModelTurn`（allowed
+  集合来自 advertise 面）；全部异常**必须回执**（completion 错误 / 未 Attach
+  的 run / 通道断开）——run 决不悬挂。宿主入口
+  `rig::register_with_model(app, DriverId, EscalationTarget, Arc<M>, &[tiers])`
+  （模型启动期预热完成；身份/能力显式声明，注册整体事务——见下 v14.2 节）。
+- **I25（capability 匹配）**：`Driver::capability()` 声明 + coordinator
+  解析期校验——capability 与 tier 的 `EscalationTarget` 不一致 → 该 tier
+  不可用（`DriverError::Policy`，首档走 Escalated / 链路中跳档），把
+  「注册错 tier」从静默放行变显式错误；`DriverError` 补 `Policy` 变体。
+- **I26（RigModelInbox 唯一注入点）**：`RigDriverState` 字段私有 +
+  只读访问器；`AgentRun::model_response` 类型上只能从 inbox drain 触达
+  （stale epoch 丢弃语义有专项测试）。
+- 测试：`FakeModel`（手工 `impl CompletionModel`，无网络）端到端驱动
+  完整模型调用路径；双档推进（tier0 失败 → tier1 成功，epoch+1）e2e。
 
 ### Changed
 - **breaking（随 PR-B 一次性完成，规格 §2.3 / P0-6 维护者裁决）**：

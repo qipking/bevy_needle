@@ -34,6 +34,9 @@ type RawInit = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char)
 type RawComplete = unsafe extern "C" fn(*const c_char, c_int, *mut c_char, c_int) -> c_int;
 type RawReset = unsafe extern "C" fn();
 type RawLoad = unsafe extern "C" fn(*const c_char, c_ulonglong) -> c_int;
+/// `needle_embed`（needle3 新增，gen≥3）：两段式——先传 `out=null, len=0` 得
+/// 向量维度，再传合法 buffer 取 `dim` 个 f32；成功返回 `dim`。
+type RawEmbed = unsafe extern "C" fn(*const c_char, *mut f32, c_int) -> c_int;
 
 /// 已打开的引擎库与解析好的入口点。
 pub struct FfiEngine {
@@ -43,6 +46,8 @@ pub struct FfiEngine {
     complete: RawComplete,
     reset: RawReset,
     load: RawLoad,
+    /// needle3 符号（`needle_embed`；缺失即打开失败——needle3 必有）。
+    embed: RawEmbed,
 }
 
 impl std::fmt::Debug for FfiEngine {
@@ -52,16 +57,18 @@ impl std::fmt::Debug for FfiEngine {
 }
 
 impl FfiEngine {
-    /// dlopen 引擎并解析全部四个符号；缺符号立刻报错（版本错配会响亮地失败）。
+    /// dlopen 引擎并解析全部符号；缺符号立刻报错（版本错配会响亮地失败）。
     pub fn open(path: &Path) -> Result<Self, NeedleError> {
         let lib = crate::ffi_loading_guard::LibraryGuard::new(path)?;
 
         // SAFETY: 符号指针来自已加载的库（句柄存于 self._lib，永不卸载），
-        // transmute 到的签名与引擎 C ABI 逐一核对（见模块级文档）。
+        // transmute 到的签名与引擎 C ABI 逐一核对（见模块级文档与
+        // third_party/needle/3.0.1/needle.h）。
         let init: RawInit = unsafe { std::mem::transmute(lib.symbol("needle_init")?) };
         let complete: RawComplete = unsafe { std::mem::transmute(lib.symbol("needle_complete")?) };
         let reset: RawReset = unsafe { std::mem::transmute(lib.symbol("needle_reset")?) };
         let load: RawLoad = unsafe { std::mem::transmute(lib.symbol("needle_load")?) };
+        let embed: RawEmbed = unsafe { std::mem::transmute(lib.symbol("needle_embed")?) };
 
         Ok(Self {
             _lib: lib,
@@ -69,7 +76,30 @@ impl FfiEngine {
             complete,
             reset,
             load,
+            embed,
         })
+    }
+
+    /// `needle_embed`：文本 → f32 向量（两段式：先问维度再取值）。
+    ///
+    /// # Errors
+    /// 引擎返回负维度或长度不匹配。
+    pub fn embed(&self, text: &str) -> Result<Vec<f32>, NeedleError> {
+        let embed = self.embed;
+        let text = cstring("text", text)?;
+        // SAFETY: 首段 out=null/len=0 只问维度（needle.h：A null output
+        // returns the model's embedding dimension without computing）。
+        let dim = unsafe { embed(text.as_ptr(), std::ptr::null_mut(), 0) };
+        if dim <= 0 {
+            return Err(NeedleError::CompleteFailed(dim));
+        }
+        let mut out = vec![0f32; dim as usize];
+        // SAFETY: out 容量恰为引擎要求的 dim。
+        let rc = unsafe { embed(text.as_ptr(), out.as_mut_ptr(), dim) };
+        if rc != dim {
+            return Err(NeedleError::CompleteFailed(rc));
+        }
+        Ok(out)
     }
 
     /// `needle_init`：绑定 system facts + 工具集（JSON 数组）+ 可选工具索引。

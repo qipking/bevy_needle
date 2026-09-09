@@ -86,6 +86,7 @@ pub struct RunResolutionSystems;
 /// `RunCommitSystems`（见类型级与模块级文档）。
 pub struct RunCommitSystems;
 
+
 /// 引擎配置：显式库路径 / 调优权重 / 缓冲大小。
 #[derive(Clone, Debug, Default)]
 pub struct EngineConfig {
@@ -95,6 +96,9 @@ pub struct EngineConfig {
     pub weights_path: Option<PathBuf>,
     /// `buffer_size`（语义见类型文档）。
     pub buffer_size: Option<usize>,
+    /// needle3 基础权重路径（`needle3.cact`；None → 走发现路径
+    /// `third_party/needle/3.0.1/` → 缓存分轨 `~/.cache/cactus-needle/v3/`）。
+    pub base_weights_path: Option<PathBuf>,
 }
 
 impl EngineConfig {
@@ -109,6 +113,12 @@ impl EngineConfig {
     /// 指定调优 `.cact` 权重（进程内一次性加载）。
     pub fn with_weights(mut self, path: impl Into<PathBuf>) -> Self {
         self.weights_path = Some(path.into());
+        self
+    }
+
+    /// 显式指定 needle3 基础权重路径（缺省走发现路径）。
+    pub fn with_base_weights(mut self, path: impl Into<PathBuf>) -> Self {
+        self.base_weights_path = Some(path.into());
         self
     }
 }
@@ -211,7 +221,14 @@ impl Plugin for BevyNeedlePlugin {
             match discover_library(config.library_path.as_deref()) {
                 Ok(path) => {
                     #[cfg(feature = "dlopen")]
-                    match crate::backend::DlopenBackend::open(&path, buffer_size) {
+                    match crate::backend::DlopenBackend::open_with_base_weights(
+                                &path,
+                                config
+                                    .base_weights_path
+                                    .clone()
+                                    .unwrap_or_else(crate::engine::default_base_weights_path),
+                                buffer_size,
+                            ) {
                         Ok(backend) => {
                             let backend: std::sync::Arc<dyn NeedleBackend> = std::sync::Arc::new(backend);
                             // 权重在启动时一次性加载（引擎无法卸载）
@@ -364,16 +381,9 @@ impl Plugin for BevyNeedlePlugin {
                         .before(finalize_escalations),
                 );
 
-            #[cfg(feature = "rig")]
-            {
-                app.init_resource::<crate::rig::RigModelInbox>()
-                    .add_systems(
-                        RunExecution,
-                        crate::rig::rig_step_system
-                            .in_set(RunResolutionSystems)
-                            .before(crate::escalate::driver_coordinator),
-                    );
-            }
+            // rig 层的 inbox/系统是泛型（M: CompletionModel，RPITIT 非 dyn-compat），
+            // 无法无具体类型注册——由宿主经 `rig::register_with_model<M>(..)` 接入
+            // （见 rig/mod.rs；规格 §4.7 注册入口 + P1-7 裁决）。
         }
 
         if let Some(runtime) = runtime {

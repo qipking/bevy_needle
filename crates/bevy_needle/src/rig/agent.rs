@@ -8,22 +8,30 @@
 //! **I3（工具执行在 ECS）**：`CallTools` 在本系统里翻译成 `ToolInvocation`
 //! 实体（复用现有 ECS pipeline），**绝不**在 rig async 回调里执行。
 //!
-//! 模型调用边界（PR-B 范围）：`CallModel` 的真实 provider 执行留待 transport
-//! 层；本层通过 [`RigModelInbox`] 回灌 [`rig_run::ModelTurn`]（测试直接注入）。
+//! **I26（RigModelInbox 是唯一注入点）**：`AgentRun::model_response` 只能从
+//! [`RigModelInbox`] 的 drain 路径（[`apply_model_turn`]）触达——
+//! `RigDriverState` 的字段全部私有，类型上封死其它注入口。
+//!
+//! **I22（worker 边界）**：`model.completion(req).await` 是**唯一的 async
+//! 点**，只发生在 `RigModelInbox::spawn` 出的 worker 线程上
+//! （`RigRuntime::block_on`）；ECS 侧只做 `next_step`（sans-I/O）与 drain。
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use bevy_ecs::prelude::*;
-use rig_core::completion::ToolDefinition;
 use rig_core::completion::message::{Message, UserContent};
+use rig_core::completion::{
+    CompletionModel, CompletionRequest, CompletionResponse, ToolDefinition,
+};
 use rig_run::{AgentRun, AgentRunStep, ModelTurn, PendingToolCall};
 use serde_json::json;
 
 use crate::agent::NeedleAgentSpec;
 use crate::escalate::{
-    DriverError, DriverEvent, DriverEventBus, DriverOutcome, DriverProtocolError, EscalationState,
+    DriverError, DriverEvent, DriverEventBus, DriverId, DriverOutcome, DriverProtocolError,
+    EscalationState,
 };
 use crate::run::{RunOwner, RunSession, RunStatus};
 use crate::session::collect_transcript;
@@ -32,7 +40,7 @@ use crate::tool::{
     ToolInvocationStatus, ToolInvocationTurn, ToolRegistry, ToolSpec,
 };
 
-use super::driver::RIG_DRIVER_ID;
+use super::runtime::RigRuntime;
 use super::tool_bridge::{definitions, pending_to_tool_call, tool_result, tripwires};
 use super::transcript::transcript_to_history;
 
@@ -40,16 +48,35 @@ use super::transcript::transcript_to_history;
 const MAX_STEPS_PER_FRAME: usize = 8;
 
 /// rig attempt 的内部状态组件（I4：`AgentRun` 只是一次 attempt 的状态）。
+///
+/// **字段全部私有（I26）**：`AgentRun::model_response` 的唯一合法触发路径是
+/// [`RigModelInbox`] 回灌（[`apply_model_turn`]）；外部只读
+/// [`RigDriverState::awaiting`] / [`RigDriverState::tool_turn`]。
 #[derive(Component)]
 pub struct RigDriverState {
     /// rig 协议状态机（sans-I/O，无 runtime）。
-    pub run: AgentRun,
+    run: AgentRun,
+    /// 创建本状态时的 attempt epoch（P0-5：每次 attempt 重建——epoch 不匹配
+    /// 即视为旧 attempt 残留，ensure_states 重建之）。
+    epoch: u64,
     /// 当前等待什么。
-    pub awaiting: RigAwait,
+    awaiting: RigAwait,
     /// ECS 工具批次的轮次标记（对应 `ToolInvocationTurn`）。
-    pub tool_turn: u32,
+    tool_turn: u32,
     /// 每轮模型调用前 `advertise_tools` 上报的工具定义（本 attempt 固定）。
-    pub tool_defs: Vec<ToolDefinition>,
+    tool_defs: Vec<ToolDefinition>,
+}
+
+impl RigDriverState {
+    /// 只读：当前等待状态（诊断/测试）。
+    pub fn awaiting(&self) -> &RigAwait {
+        &self.awaiting
+    }
+
+    /// 只读：当前工具批次轮次。
+    pub fn tool_turn(&self) -> u32 {
+        self.tool_turn
+    }
 }
 
 impl std::fmt::Debug for RigDriverState {
@@ -77,18 +104,244 @@ pub enum RigAwait {
     },
 }
 
-/// 模型回合回灌消息（I17：携带 `(run, epoch)`）。
-#[derive(Clone, Debug)]
+/// 模型回执（worker → ECS；I17 携带 `(run, epoch)`）。
+///
+/// `Err` = `model.completion` 失败（规格 §7「模型返回错误 → Failed」）。
 pub struct RigModelTurn {
     /// 目标 run。
     pub run: Entity,
     /// attempt 的 epoch。
     pub epoch: u64,
-    /// 模型产物。
-    pub turn: ModelTurn,
+    /// 模型产物或失败原因。
+    pub outcome: Result<ModelTurn, DriverError>,
 }
 
-/// 从 provider 响应构造 [`ModelTurn`]（driver/worker 的规范构造入口）。
+/// 模型作业（ECS → worker；I17 携带 `(run, epoch)`）。
+pub enum ModelJob<M: CompletionModel + 'static> {
+    /// submit 时把 attempt 的模型交给 worker（键 = run 实体）。
+    Attach {
+        /// 目标 run。
+        run: Entity,
+        /// attempt 的 epoch。
+        epoch: u64,
+        /// 启动期预热完成的共享模型（P1-7：`M` 泛型——`CompletionModel`
+        /// 是 RPITIT，非 dyn-compatible）。
+        model: Arc<M>,
+    },
+    /// CallModel 作业：worker 侧 `completion().await`（I22）。
+    CallModel {
+        /// 目标 run。
+        run: Entity,
+        /// attempt 的 epoch。
+        epoch: u64,
+        /// 规范请求（prompt 已折进 `chat_history` 末位——上游 builder 语义）。
+        request: CompletionRequest,
+        /// advertise 的工具名集合（回执转 `ModelTurn` 时填 executable/allowed）。
+        tool_names: BTreeSet<String>,
+    },
+    /// 停止 worker（§7 shutdown 行：stop accepting → join）。
+    Shutdown,
+}
+
+/// rig 模型链路资源（`M` 泛型；[`ModelJob`] 出站 + [`RigModelTurn`] 回灌）。
+///
+/// **I26**：模型回执只从本资源的回灌端进入 ECS；**I22**：`completion().await`
+/// 只在本资源 spawn 的 worker 线程上执行。
+#[derive(Resource)]
+pub struct RigModelInbox<M: CompletionModel + 'static> {
+    jobs_tx: Sender<ModelJob<M>>,
+    turns_tx: Sender<RigModelTurn>,
+    turns_rx: Mutex<Receiver<RigModelTurn>>,
+    _worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl<M: CompletionModel + 'static> RigModelInbox<M> {
+    /// 构造并启动 worker 线程（`completion().await` 的唯一执行地，I22）。
+    pub fn spawn(runtime: RigRuntime) -> Self {
+        let (jobs_tx, jobs_rx) = std::sync::mpsc::channel::<ModelJob<M>>();
+        let (turns_tx, turns_rx) = std::sync::mpsc::channel::<RigModelTurn>();
+        let worker_tx = turns_tx.clone();
+        let worker = std::thread::Builder::new()
+            .name("bevy_needle_rig_model".into())
+            .spawn(move || model_worker_loop(runtime, jobs_rx, worker_tx))
+            .ok();
+        Self {
+            jobs_tx,
+            turns_tx,
+            turns_rx: Mutex::new(turns_rx),
+            _worker: worker,
+        }
+    }
+
+    /// 作业发送端（[`super::driver::RigDriver`] 持有；submit 时发 Attach）。
+    pub fn jobs(&self) -> Sender<ModelJob<M>> {
+        self.jobs_tx.clone()
+    }
+
+    /// 便捷注入（worker 语义之外的**测试**注入口；仍走回灌通道，I26 不破）。
+    pub fn inject(&self, msg: RigModelTurn) {
+        let _ = self.turns_tx.send(msg);
+    }
+
+    /// 出站：提交 CallModel 作业（通道断开 = worker 已死，返回 false 由调用方
+    /// 按 §7「TransportError」处理）。
+    fn submit_call_model(
+        &self,
+        run: Entity,
+        epoch: u64,
+        request: CompletionRequest,
+        tool_names: BTreeSet<String>,
+    ) -> bool {
+        self.jobs_tx
+            .send(ModelJob::CallModel {
+                run,
+                epoch,
+                request,
+                tool_names,
+            })
+            .is_ok()
+    }
+
+    fn drain(&self) -> Vec<RigModelTurn> {
+        let mut out = Vec::new();
+        let rx = self.rx();
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => out.push(msg),
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        out
+    }
+
+    fn rx(&self) -> std::sync::MutexGuard<'_, Receiver<RigModelTurn>> {
+        match self.turns_rx.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
+
+/// rig 侧身份集合（I31）：**按模型类型隔离**的 `DriverId` 集。
+/// `ensure_states::<M>()` 只认领 `esc.driver_id ∈ RigDriverIds<M>` 的 run；
+/// 多个 DriverId 共享同一 `M` 时同住一个集合（I32）。
+#[derive(Resource)]
+pub struct RigDriverIds<M: CompletionModel + 'static>(
+    std::collections::HashSet<DriverId>,
+    std::marker::PhantomData<fn() -> M>,
+);
+
+impl<M: CompletionModel + 'static> Default for RigDriverIds<M> {
+    fn default() -> Self {
+        Self(std::collections::HashSet::new(), std::marker::PhantomData)
+    }
+}
+
+impl<M: CompletionModel + 'static> RigDriverIds<M> {
+    /// 该 M 是否已接管过此身份。
+    pub fn contains(&self, id: &DriverId) -> bool {
+        self.0.contains(id)
+    }
+
+    /// 登记身份（register 成功后调用）。
+    pub fn insert(&mut self, id: DriverId) {
+        self.0.insert(id);
+    }
+
+    /// 已登记的身份数（诊断）。
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// 是否为空（诊断）。
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<M: CompletionModel + 'static> std::fmt::Debug for RigDriverIds<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RigDriverIds").field(&self.0).finish()
+    }
+}
+
+impl<M: CompletionModel + 'static> bevy_ecs::world::FromWorld for RigModelInbox<M> {
+    fn from_world(_world: &mut bevy_ecs::world::World) -> Self {
+        Self::spawn(RigRuntime::lazy())
+    }
+}
+
+impl<M: CompletionModel + 'static> std::fmt::Debug for RigModelInbox<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RigModelInbox")
+    }
+}
+
+/// worker 循环（I22 的唯一 block_on 所在地；§7 shutdown：sender drop → 循环退出）。
+fn model_worker_loop<M: CompletionModel + 'static>(
+    runtime: RigRuntime,
+    jobs: Receiver<ModelJob<M>>,
+    turns: Sender<RigModelTurn>,
+) {
+    let mut models: HashMap<Entity, Arc<M>> = HashMap::new();
+    while let Ok(job) = jobs.recv() {
+        match job {
+            ModelJob::Shutdown => break,
+            ModelJob::Attach { run, epoch: _, model } => {
+                models.insert(run, model);
+            }
+            ModelJob::CallModel {
+                run,
+                epoch,
+                request,
+                tool_names,
+            } => {
+                // 未 Attach = driver 未接管该 run：**必须回执失败**，静默丢弃
+                // 会让 run 悬挂在 awaiting=Model（违反 I9「不悬挂」精神）。
+                let Some(model) = models.get(&run) else {
+                    let _ = turns.send(RigModelTurn {
+                        run,
+                        epoch,
+                        outcome: Err(DriverError::Unavailable(format!(
+                            "no model attached for run (submit handshake missing)"
+                        ))),
+                    });
+                    continue;
+                };
+                // I22：completion().await 只在此处 block_on
+                let outcome = match runtime.block_on(model.completion(request)) {
+                    Ok(Ok(resp)) => Ok(model_turn_from_response(resp, &tool_names)),
+                    Ok(Err(err)) => Err(DriverError::Model(err.to_string())),
+                    Err(err) => Err(DriverError::Transport(err)),
+                };
+                let _ = turns.send(RigModelTurn {
+                    run,
+                    epoch,
+                    outcome,
+                });
+            }
+        }
+    }
+}
+
+/// `CompletionResponse` → [`ModelTurn`]（worker 侧规范转换）。
+///
+/// `executable`/`allowed` 集合来自 advertise 面（留空会把 tool call 判非法，
+/// 上游协议校验面，见 [`model_turn_with_tools`]）。
+fn model_turn_from_response(resp: CompletionResponse, names: &BTreeSet<String>) -> ModelTurn {
+    ModelTurn::new(
+        resp.message_id.clone(),
+        resp.choice,
+        resp.usage,
+        names.clone(),
+        names.clone(),
+    )
+    .with_identity(resp.response_id, resp.provider_request_id)
+    .with_raw(resp.raw)
+}
+
+/// 从 provider 响应构造 [`ModelTurn`]（worker 内部使用；导出供测试/工具）。
 ///
 /// `executable_tool_names` / `allowed_tool_names` **必须**来自本 attempt
 /// advertise 的工具集——留空会把每个 tool call 判为非法
@@ -99,81 +352,26 @@ pub fn model_turn_with_tools(
     usage: rig_core::completion::Usage,
     advertised: &[ToolDefinition],
 ) -> ModelTurn {
-    let names: std::collections::BTreeSet<String> =
-        advertised.iter().map(|d| d.name.clone()).collect();
+    let names: BTreeSet<String> = advertised.iter().map(|d| d.name.clone()).collect();
     ModelTurn::new(message_id, choice, usage, names.clone(), names)
-}
-
-/// 模型回合回灌通道（Resource；生产 worker 与测试都向此发 [`RigModelTurn`]）。
-#[derive(Resource)]
-pub struct RigModelInbox {
-    tx: Sender<RigModelTurn>,
-    rx: Mutex<Receiver<RigModelTurn>>,
-}
-
-impl RigModelInbox {
-    /// 构造/执行入口（错误经 `Result` 返回，不 panic）。
-    pub fn new() -> Self {
-        let (tx, rx) = std::sync::mpsc::channel();
-        Self {
-            tx,
-            rx: Mutex::new(rx),
-        }
-    }
-
-    /// 发送端（测试/生产 worker 注入模型回合）。
-    pub fn sender(&self) -> Sender<RigModelTurn> {
-        self.tx.clone()
-    }
-
-    /// 便捷注入（测试用）。
-    pub fn inject(&self, msg: RigModelTurn) {
-        let _ = self.tx.send(msg);
-    }
-
-    fn drain(&self) -> Vec<RigModelTurn> {
-        let mut out = Vec::new();
-        let Ok(rx) = self.rx.lock() else {
-            return out;
-        };
-        loop {
-            match rx.try_recv() {
-                Ok(msg) => out.push(msg),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
-        }
-        out
-    }
-}
-
-impl Default for RigModelInbox {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for RigModelInbox {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RigModelInbox")
-    }
 }
 
 /// rig 步进系统（注册在 `RunResolutionSystems`，**排在 coordinator 之前**）。
 ///
 /// 每帧三件事：① 回灌模型回合；② 为 rig 接管的升级创建 `RigDriverState`；
 /// ③ 步进所有 rig run（工具批次终态 → `tool_results` 回喂 → 继续 `next_step`）。
-pub fn rig_step_system(world: &mut World) {
+pub fn rig_step_system<M: CompletionModel + 'static>(world: &mut World) {
     // ① 回灌模型回合（stale epoch 丢弃，I17）
-    let turns = world.resource::<RigModelInbox>().drain();
+    let turns = world.resource::<RigModelInbox<M>>().drain();
     for msg in turns {
         apply_model_turn(world, msg);
     }
 
-    // ② 为 rig 接管的升级创建状态（AgentRun 重建，P0-5）
-    ensure_states(world);
+    // ② 为 rig 接管的升级创建状态（AgentRun 重建，P0-5；认领按 I31 身份集合）
+    ensure_states::<M>(world);
 
     // ③ 步进
-    step_all(world);
+    step_all::<M>(world);
 }
 
 /// ① 把模型回合喂回 `AgentRun`（epoch 不匹配直接丢弃，不改 Run，I17）。
@@ -187,7 +385,22 @@ fn apply_model_turn(world: &mut World, msg: RigModelTurn) {
     if !matches!(status, RunStatus::Escalating { .. }) || esc.epoch != msg.epoch {
         return; // stale event：正常并发控制（规格 §7）
     }
+    let state_epoch = world
+        .get::<RigDriverState>(msg.run)
+        .map(|s| s.epoch)
+        .unwrap_or(u64::MAX);
+    if state_epoch != esc.epoch {
+        return; // 旧 attempt 的回执：新状态尚未就绪或已换代，丢弃（I17）
+    }
 
+    let turn = match msg.outcome {
+        Ok(turn) => turn,
+        // 模型调用失败（worker 回执）：规格 §7「模型返回错误 → Failed」
+        Err(err) => {
+            emit_failed(world, msg.run, err);
+            return;
+        }
+    };
     let result = {
         let Some(mut state) = world.get_mut::<RigDriverState>(msg.run) else {
             return;
@@ -195,7 +408,7 @@ fn apply_model_turn(world: &mut World, msg: RigModelTurn) {
         if !matches!(state.awaiting, RigAwait::Model) {
             return; // 不该有模型回合
         }
-        match state.run.model_response(msg.turn) {
+        match state.run.model_response(turn) {
             Ok(rig_run::ModelTurnOutcome::Continue { .. }) => {
                 state.awaiting = RigAwait::Ready;
                 None
@@ -259,7 +472,13 @@ fn apply_model_turn(world: &mut World, msg: RigModelTurn) {
 }
 
 /// ② 为 rig 接管的升级创建 `RigDriverState`（P0-5：每次 attempt 重建 AgentRun）。
-fn ensure_states(world: &mut World) {
+fn ensure_states<M: CompletionModel + 'static>(world: &mut World) {
+    // I31：只认领「本 M 已登记身份」的 run——身份是实例字段（I30），
+    // 不再依赖任何固定常量。多个 M 各认各的，互不争抢。
+    let claimed_ids = world
+        .get_resource::<RigDriverIds<M>>()
+        .map(|ids| ids.0.clone())
+        .unwrap_or_default();
     let candidates: Vec<(Entity, EscalationState)> = {
         let mut query = world.query::<(
             Entity,
@@ -271,7 +490,8 @@ fn ensure_states(world: &mut World) {
             .iter(world)
             .filter_map(|(run, status, esc, state)| match status {
                 RunStatus::Escalating { .. }
-                    if esc.driver_id == RIG_DRIVER_ID && state.is_none() =>
+                    if claimed_ids.contains(&esc.driver_id)
+                        && state.map(|s| s.epoch != esc.epoch).unwrap_or(true) =>
                 {
                     Some((run, esc.clone()))
                 }
@@ -280,17 +500,21 @@ fn ensure_states(world: &mut World) {
             .collect()
     };
 
-    for (run, _esc) in candidates {
+    for (run, esc) in candidates {
+        // P0-5：每次 attempt 重建——旧 epoch 的残留状态先移除（其 awaiting 可能
+        // 停在 Model/Tools，新 attempt 必须从 Ready 开始）。
+        if let Ok(mut entity) = world.get_entity_mut(run) {
+            entity.remove::<RigDriverState>();
+        }
         match build_agent_run(world, run) {
             Ok((agent_run, tool_defs)) => {
-                let mut state = RigDriverState {
+                let state = RigDriverState {
                     run: agent_run,
+                    epoch: esc.epoch,
                     awaiting: RigAwait::Ready,
                     tool_turn: 0,
                     tool_defs,
                 };
-                // 首次 advertise（turn=1 的模型调用）在 step 中按 CallModel.turn 重录
-                let _ = &mut state;
                 if let Ok(mut entity) = world.get_entity_mut(run) {
                     entity.insert(state);
                 }
@@ -348,13 +572,19 @@ fn collect_tools(world: &mut World, agent: Entity) -> Vec<ToolSpec> {
 }
 
 /// ③ 步进所有 rig run（有界）。
-fn step_all(world: &mut World) {
+fn step_all<M: CompletionModel + 'static>(world: &mut World) {
+    // I31：步进与认领同源——只步进本 M 身份集合内的 run，防止同一 state
+    // 被多个 M 的系统各步进一次（CallModel 双发）。
+    let claimed_ids = world
+        .get_resource::<RigDriverIds<M>>()
+        .map(|ids| ids.0.clone())
+        .unwrap_or_default();
     let runs: Vec<Entity> = {
-        let mut query = world.query::<(Entity, &RunStatus, &RigDriverState)>();
+        let mut query = world.query::<(Entity, &RunStatus, &RigDriverState, &EscalationState)>();
         query
             .iter(world)
-            .filter_map(|(run, status, _)| match status {
-                RunStatus::Escalating { .. } => Some(run),
+            .filter_map(|(run, status, _state, esc)| match status {
+                RunStatus::Escalating { .. } if claimed_ids.contains(&esc.driver_id) => Some(run),
                 _ => None,
             })
             .collect()
@@ -362,7 +592,7 @@ fn step_all(world: &mut World) {
 
     for run in runs {
         for _ in 0..MAX_STEPS_PER_FRAME {
-            if !step_once(world, run) {
+            if !step_once::<M>(world, run) {
                 break;
             }
         }
@@ -370,7 +600,7 @@ fn step_all(world: &mut World) {
 }
 
 /// 步进单个 run 一步；返回是否可继续（可继续 = 工具批次已完成，应再 step）。
-fn step_once(world: &mut World, run: Entity) -> bool {
+fn step_once<M: CompletionModel + 'static>(world: &mut World, run: Entity) -> bool {
     enum Next {
         Stop,
         ResolveTools,
@@ -405,14 +635,45 @@ fn step_once(world: &mut World, run: Entity) -> bool {
             };
 
             match step {
-                Ok(AgentRunStep::CallModel { turn, .. }) => {
-                    if let Some(mut state) = world.get_mut::<RigDriverState>(run) {
-                        // 每次模型调用前重录 advertise（defs 本 attempt 固定）
+                Ok(AgentRunStep::CallModel {
+                    prompt,
+                    history,
+                    turn,
+                }) => {
+                    // 每次模型调用前重录 advertise（defs 本 attempt 固定）
+                    let (defs, _esc) = {
+                        let Some(mut state) = world.get_mut::<RigDriverState>(run) else {
+                            return false;
+                        };
                         let defs = state.tool_defs.clone();
-                        state.run.advertise_tools(turn, defs);
+                        state.run.advertise_tools(turn, defs.clone());
                         state.awaiting = RigAwait::Model;
-                    }
-                    // 生产 worker 在这里消费 (prompt, history, turn) 并回灌 RigModelTurn
+                        (defs, ())
+                    };
+                    let Some(esc) = world.get::<EscalationState>(run).cloned() else {
+                        return false;
+                    };
+                    // 规范请求：prompt 折进 chat_history 末位（上游 builder 语义）；
+                    // system 已由 M1 快照作为首条 System 消息进入 history → preamble 为空
+                    let mut chat_history = history;
+                    chat_history.push(prompt);
+                    let request = CompletionRequest {
+                        model: None,
+                        preamble: None,
+                        chat_history,
+                        documents: Vec::new(),
+                        tools: defs.clone(),
+                        temperature: None,
+                        max_tokens: None,
+                        tool_choice: None,
+                        additional_params: None,
+                        output_schema: None,
+                        record_telemetry_content: false,
+                    };
+                    let tool_names: BTreeSet<String> = defs.iter().map(|d| d.name.clone()).collect();
+                    world
+                        .resource::<RigModelInbox<M>>()
+                        .submit_call_model(run, esc.epoch, request, tool_names);
                     false
                 }
                 Ok(AgentRunStep::CallTools { calls }) => {
@@ -583,6 +844,9 @@ fn spawn_tool_batch(
 }
 
 /// 终态：成功 → bus（coordinator 转 Completed）。
+///
+/// I30：事件的身份字段取 `EscalationState.driver_id`（真实执行者），
+/// 不是任何常量。
 fn emit_succeeded(world: &mut World, run: Entity, output: String) {
     let esc = world.get::<EscalationState>(run).cloned();
     let Some(esc) = esc else { return };
@@ -590,7 +854,7 @@ fn emit_succeeded(world: &mut World, run: Entity, output: String) {
     let _ = bus.sender().send(DriverEvent {
         run,
         epoch: esc.epoch,
-        driver: RIG_DRIVER_ID,
+        driver: esc.driver_id,
         outcome: DriverOutcome::Succeeded { output },
     });
 }
@@ -603,7 +867,7 @@ fn emit_failed(world: &mut World, run: Entity, error: DriverError) {
     let _ = bus.sender().send(DriverEvent {
         run,
         epoch: esc.epoch,
-        driver: RIG_DRIVER_ID,
+        driver: esc.driver_id,
         outcome: DriverOutcome::Failed { error },
     });
 }

@@ -29,7 +29,7 @@ use crate::tool::ToolSpec;
 
 use super::bus::DriverEventBus;
 use super::driver::{
-    Driver, DriverAttemptCtx, DriverError, DriverEvent, DriverId, DriverOutcome, EscalationReason,
+    Driver, DriverAttemptCtx, DriverError, DriverEvent, DriverOutcome, EscalationReason,
 };
 use super::registry::DriverRegistry;
 use super::state::EscalationState;
@@ -133,6 +133,11 @@ fn submit_fresh(world: &mut World) {
             now,
         ) {
             Ok(()) => {}
+            Err(error @ (DriverError::Policy(_) | DriverError::Unavailable(_))) => {
+                // 配置/注册错误：该 tier **没试**，不染指 Failed——留给
+                // 安全阀按 §6 收 Escalated（规格 §13 预热失败同款语义）。
+                tracing::warn!(run = ?run, %error, "tier unavailable (policy mismatch); run stays Escalating for safety valve");
+            }
             Err(error) => {
                 // driver 已注册但 submit 自身报错 → 「试过且坏了」，进下一档或 Failed
                 fail_after_attempt(world, run, tier, 0, EscalationReason::BelowConfidence, now, error);
@@ -158,6 +163,23 @@ fn submit_tier(
         .ok_or_else(|| DriverError::Unavailable(format!("no driver registered for tier {tier}")))?;
 
     let policy = world.resource::<EscalationPolicy>().clone();
+
+    // I25：capability 与 tier 的 target 不一致 → 该 tier 不可用（Policy 错误，
+    // 宿主配置问题；升级到别的 tier 无济于事，由调用方按「没试」收尾）。
+    let target = policy
+        .tiers
+        .get(tier as usize)
+        .copied()
+        .ok_or_else(|| DriverError::Policy(format!("tier {tier} out of policy tiers bounds")))?;
+    if driver.capability() != target {
+        return Err(DriverError::Policy(format!(
+            "driver {} (capability {:?}) bound to tier {tier} whose target is {:?}",
+            driver.id(),
+            driver.capability(),
+            target
+        )));
+    }
+
     let deadline = Instant::now() + policy.per_tier_timeout;
 
     let ctx = build_ctx(world, run, tier, attempt, epoch, deadline, reason);
@@ -169,6 +191,8 @@ fn submit_tier(
     state.deadline = deadline;
     state.started = started;
     state.handle = Some(handle);
+    // I28：attempt 创建时刻的执行者快照——取消路径据此路由，不回查 registry。
+    state.resolved = Some(Arc::clone(&driver));
 
     if let Ok(mut entity) = world.get_entity_mut(run) {
         entity.insert((RunStatus::Escalating { tier }, state));
@@ -224,6 +248,21 @@ fn fail_after_attempt(
             return;
         }
 
+        // I25：下一档 capability 不匹配 → **跳过该档**继续推进（该档没试；
+        // 之前的失败已发生，链路继续），而不是 Failed。
+        {
+            let mismatched = world
+                .resource::<DriverRegistry>()
+                .resolve(next)
+                .map(|driver| driver.capability() != target)
+                .unwrap_or(true);
+            if mismatched {
+                tier = next;
+                epoch = epoch.wrapping_add(1);
+                continue;
+            }
+        }
+
         epoch = epoch.wrapping_add(1);
 
         // 提交下一档 attempt 0；提交失败视为该档「试过且坏了」，继续推进
@@ -259,28 +298,25 @@ fn check_timeouts(world: &mut World) {
 
 /// 协作式取消在途 attempt（规格 §7：取消是逻辑取消，不保证底层中断）。
 fn cancel_inflight(world: &mut World) {
-    let cancels: Vec<(Entity, DriverId, super::driver::AttemptHandle)> = {
+    // I28（v14.2）：取消路由用 attempt 创建时刻 resolve 的实例快照
+    // （`EscalationState.resolved`），**不回查 registry**——registry 的后续
+    // mutation（rebind 等）不改变「取消针对谁」。快照缺失（手插状态的
+    // 测试场景）按无执行者处理：只清句柄，不虚构取消。
+    let cancels: Vec<(Entity, super::driver::AttemptHandle, Option<Arc<dyn Driver>>)> = {
         let mut query = world.query::<(Entity, &RunStatus, &EscalationState)>();
         query
             .iter(world)
             .filter_map(|(run, status, state)| match status {
-                RunStatus::Cancelled => state.handle.map(|h| (run, state.driver_id, h)),
+                RunStatus::Cancelled => state
+                    .handle
+                    .map(|h| (run, h, state.resolved.clone())),
                 _ => None,
             })
             .collect()
     };
 
-    // 先收集 driver 句柄（解除对 registry 的不可变借用），再取消 + 清 handle
-    let drivers: Vec<Option<Arc<dyn Driver>>> = {
-        let registry = world.resource::<DriverRegistry>();
-        cancels
-            .iter()
-            .map(|(_, id, _)| registry.get(*id))
-            .collect()
-    };
-
-    for ((run, _, handle), driver) in cancels.into_iter().zip(drivers) {
-        if let Some(driver) = driver {
+    for (run, handle, resolved) in cancels {
+        if let Some(driver) = resolved {
             driver.cancel(handle);
         }
         if let Ok(mut entity) = world.get_entity_mut(run) {

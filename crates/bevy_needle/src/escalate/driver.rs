@@ -22,6 +22,7 @@ use std::time::Instant;
 use bevy_ecs::prelude::Entity;
 use serde_json::Value;
 
+use crate::policy::EscalationTarget;
 use crate::session::ChatMessageRole;
 use crate::tool::ToolSpec;
 
@@ -101,6 +102,11 @@ pub enum DriverError {
     Model(String),
     /// 逻辑取消。
     Cancelled,
+    /// 策略/配置不一致（I25：capability 与 tier 的 target 不匹配等）。
+    ///
+    /// 这是**宿主配置错误**：升级到别的 tier 无济于事，coordinator 视为
+    /// 该 tier 不可用（「没试」，§6）。
+    Policy(String),
 }
 
 impl std::fmt::Display for DriverError {
@@ -111,6 +117,7 @@ impl std::fmt::Display for DriverError {
             DriverError::Transport(msg) => write!(f, "driver transport error: {msg}"),
             DriverError::Model(msg) => write!(f, "driver model error: {msg}"),
             DriverError::Cancelled => f.write_str("driver attempt cancelled"),
+            DriverError::Policy(msg) => write!(f, "driver policy error: {msg}"),
         }
     }
 }
@@ -188,6 +195,14 @@ pub struct DriverEvent {
 pub trait Driver: Send + Sync + 'static {
     /// 本 driver 的标识（I6：RunResolutionSystems 只认它）。
     fn id(&self) -> DriverId;
+
+    /// 本 driver 的能力类别（I25：capability 匹配）。
+    ///
+    /// coordinator 解析 tier 时校验：`capability()` 与 `policy.tiers[tier]`
+    /// 不一致 → 该 tier 视为**不可用**（`DriverError::Policy`），不提交。
+    /// 这把「注册错 tier」（如把 Cloud driver 绑到 Local 档）从运行期静默
+    /// 变成显式错误。
+    fn capability(&self) -> EscalationTarget;
 
     /// 提交一次 attempt。立即返回，不阻塞。
     ///

@@ -11,3 +11,6 @@ demo/univis_needle_demo/assets/fonts/*.ttc
 # 本机私有
 Cargo.lock.bak
 *.log
+
+# needle3 基础权重（35MB；不进 git，用 third_party/needle/3.0.1/fetch.sh 获取）
+third_party/needle/3.0.1/needle3.cact
