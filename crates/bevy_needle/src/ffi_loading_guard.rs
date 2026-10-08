@@ -24,7 +24,9 @@ impl std::fmt::Debug for LibraryGuard {
 impl LibraryGuard {
     /// 打开动态库。
     pub fn new(path: &Path) -> Result<Self, NeedleError> {
-        let lib = unsafe { libloading::Library::new(path) }.map_err(|source| {
+        let lib =
+            // SAFETY: 以合法路径打开动态库；句柄由 `LibraryGuard` 统一持有卸载。
+            unsafe { libloading::Library::new(path) }.map_err(|source| {
             NeedleError::LibraryLoad {
                 path: path.to_path_buf(),
                 reason: source.to_string(),
@@ -36,6 +38,7 @@ impl LibraryGuard {
     /// 解析符号为裸指针（调用方负责 transmute 到正确签名，见 [`crate::ffi`]）。
     pub fn symbol(&self, name: &'static str) -> Result<*const (), NeedleError> {
         let sym: libloading::Symbol<*const ()> =
+            // SAFETY: `name` 以 NUL 结尾无越界；库句柄存活期间调用。
             unsafe { self.lib.get(name.as_bytes()) }.map_err(|source| {
                 NeedleError::MissingSymbol {
                     symbol: name,

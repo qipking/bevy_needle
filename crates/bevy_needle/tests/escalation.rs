@@ -396,7 +396,7 @@ fn cancelled_run_discards_late_driver_result() {
         .write_message(RunAgent::new(handles.agent, "hi"));
     // 送入 run 并循环到 Escalating（不依赖固定帧数——CI 慢机上帧数与
     // 提交节奏抖动；Pending 步骤挂起保证该状态一旦到达就稳定停留）。
-    for _ in 0..50 {
+    for _ in 0..200 {
         run_frames(&mut app, 1);
         let escalating = {
             let world = app.world_mut();

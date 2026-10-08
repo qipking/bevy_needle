@@ -220,7 +220,6 @@ pub fn register_tool_handler(
 /// - `RegistryHandler`: 由内置分发系统执行 [`ToolHandlers`] 里的 handler；
 /// - `External`: 留给游戏自己的系统（在 [`ToolDispatchSystems`] 集内处理）。
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-/// 由插件内置分发系统执行 `ToolHandlers` 中注册的纯函数。
 pub enum ToolDispatchPolicy {
     /// 由插件内置分发系统执行 `ToolHandlers` 中注册的纯函数。
     #[default]
@@ -234,9 +233,7 @@ pub enum ToolDispatchPolicy {
 pub struct ToolInvocation;
 
 #[derive(Component, Clone, Debug)]
-/// 调用载荷。
-
-/// 已入队等待分发。
+/// 调用载荷：已入队等待分发。
 pub struct ToolInvocationCall(pub ToolCall);
 /// 执行成功。
 
@@ -255,7 +252,6 @@ pub enum ToolInvocationStatus {
 
 #[derive(Component, Clone, Debug)]
 /// 成功产物。
-
 pub struct ToolInvocationOutput(pub ToolOutput);
 
 #[derive(Component, Clone, Debug, PartialEq, Eq)]

@@ -122,7 +122,7 @@ pub fn collect_transcript(world: &mut World, session: Entity) -> Vec<(ChatMessag
     let mut ordered: Vec<(u64, (ChatMessageRole, String))> = query
         .iter(world)
         .filter(|(owner, _, _, _)| owner.0 == session)
-        .map(|(_, role, text, seq)| (seq.0, (role.clone(), text.0.clone())))
+        .map(|(_, role, text, seq)| (seq.0, (*role, text.0.clone())))
         .collect();
     ordered.sort_by_key(|(seq, _)| *seq);
     ordered.into_iter().map(|(_, pair)| pair).collect()

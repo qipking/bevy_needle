@@ -201,6 +201,9 @@ impl NeedleBackend for DlopenBackend {
     }
 }
 
+/// 动态信封闭包（按输入文本生成信封）。
+type DynamicEnvelope = std::sync::Arc<dyn Fn(&str) -> Value + Send + Sync>;
+
 /// 脚本化 Mock 后端：按顺序回放信封，或用闭包动态生成。
 ///
 /// ```no_run
@@ -216,7 +219,7 @@ impl NeedleBackend for DlopenBackend {
 /// ```
 pub struct MockBackend {
     script: Mutex<Vec<Value>>,
-    dynamic: Option<std::sync::Arc<dyn Fn(&str) -> Value + Send + Sync>>,
+    dynamic: Option<DynamicEnvelope>,
     bound: Mutex<Option<u64>>,
     bind_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
     complete_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -224,6 +227,11 @@ pub struct MockBackend {
 }
 
 impl Clone for MockBackend {
+    /// 克隆脚本与统计计数（动态闭包共享同一份 `Arc`）。
+    ///
+    /// # Panics
+    ///
+    /// 若内部脚本或绑定状态的锁已被毒化（持锁线程 panic）。
     fn clone(&self) -> Self {
         Self {
             script: Mutex::new(self.script.lock().expect("mock script poisoned").clone()),
@@ -268,6 +276,10 @@ impl MockBackend {
     }
 
     /// 追加一条脚本信封。
+    ///
+    /// # Panics
+    ///
+    /// 若内部脚本锁已被毒化（持锁线程 panic）。
     pub fn push(&self, envelope: Value) {
         self.script
             .lock()

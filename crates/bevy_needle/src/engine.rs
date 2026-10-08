@@ -219,6 +219,10 @@ pub fn discover_library_for(
 
 /// needle3 基础权重（`needle3.cact`）的默认发现路径
 /// （与库发现同源：`third_party/needle/<version>/` → 缓存分轨 `v3/`）。
+///
+/// # Panics
+///
+/// 若 gen3 代际没有声明的 base weights 文件名（不变量，正常不会发生）。
 pub fn default_base_weights_path() -> PathBuf {
     let generation = EngineGeneration::Gen3;
     let file = generation

@@ -73,7 +73,7 @@ fn hash_signature(parts: &[&str]) -> u64 {
             hash ^= *byte as u64;
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
-        hash ^= 0x1f as u64;
+        hash ^= 0x1f;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash

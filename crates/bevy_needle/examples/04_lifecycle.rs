@@ -25,20 +25,27 @@ use serde_json::json;
 #[derive(Resource, Default)]
 struct Frame(usize);
 
+// run 的全部"状态面"一次查询。
+type RunFaces<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static RunStatus,
+        &'static RunTurn,
+        Option<&'static RunEngineInFlight>,
+        Option<&'static RunAwaitingTools>,
+        Option<&'static RunResultText>,
+        Option<&'static RunFailure>,
+        Option<&'static RunNote>,
+    ),
+>;
+
 // ── 逐帧状态观察系统：本例的核心 ──
 fn observe_frames(
     mut frame: ResMut<Frame>,
     // 一次查询拿到 run 的全部"状态面"。
-    runs: Query<(
-        Entity,
-        &RunStatus,
-        &RunTurn,
-        Option<&RunEngineInFlight>,
-        Option<&RunAwaitingTools>,
-        Option<&RunResultText>,
-        Option<&RunFailure>,
-        Option<&RunNote>,
-    )>,
+    runs: RunFaces,
     // 关键：只在组件变化时运行/读取 —— 完成后的 run 不会每帧刷屏。
     // （Changed 过滤放在查询里，把"要不要打印"的决定权交给 change-detection。）
 ) {
@@ -61,10 +68,10 @@ fn observe_frames(
         if let Some(a) = awaiting {
             parts.push(format!("等工具 {}/{}", 0, a.expected));
         }
-        if let Some(t) = result {
-            if !t.0.is_empty() {
-                parts.push(format!("结果={:?}", t.0));
-            }
+        if let Some(t) = result
+            && !t.0.is_empty()
+        {
+            parts.push(format!("结果={:?}", t.0));
         }
         if let Some(f) = failure {
             parts.push(format!("失败={:?}", f.0));

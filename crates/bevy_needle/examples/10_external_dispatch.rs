@@ -140,16 +140,21 @@ fn main() {
     println!("  spawn 的单位: {units:?}（SpawnedAt 帧 {frames} 内）");
 }
 
+/// 刚入队且属于 External 分发的 invocation 查询。
+type InvocationQuery<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static ToolInvocationCall, &'static ToolInvocationStatus),
+    (
+        With<ToolInvocation>,
+        Changed<ToolInvocationStatus>, // 只关心刚变成 Queued 的
+    ),
+>;
+
 /// External 工具的"开始执行"：立即写 Running + 挂工期组件。
 fn start_external_tools(
     mut commands: Commands,
-    invocations: Query<
-        (Entity, &ToolInvocationCall, &ToolInvocationStatus),
-        (
-            With<ToolInvocation>,
-            Changed<ToolInvocationStatus>, // 只关心刚变成 Queued 的
-        ),
-    >,
+    invocations: InvocationQuery,
     frames: Res<FrameCounter>,
 ) {
     for (entity, call, status) in &invocations {

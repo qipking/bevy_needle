@@ -254,20 +254,21 @@ pub fn cancel_runs(world: &mut World) {
         messages.drain().collect()
     };
     for message in cancellations {
-        if let Ok(mut entity) = world.get_entity_mut(message.run) {
-            if let Some(status) = entity.get::<RunStatus>() {
-                if matches!(
-                    status,
-                    RunStatus::Completed
-                        | RunStatus::Escalated
-                        | RunStatus::Failed
-                        | RunStatus::Cancelled
-                ) {
-                    continue;
-                }
-            }
-            entity.insert(RunStatus::Cancelled);
+        let Ok(mut entity) = world.get_entity_mut(message.run) else {
+            continue;
+        };
+        if let Some(status) = entity.get::<RunStatus>()
+            && matches!(
+                status,
+                RunStatus::Completed
+                    | RunStatus::Escalated
+                    | RunStatus::Failed
+                    | RunStatus::Cancelled
+            )
+        {
+            continue;
         }
+        entity.insert(RunStatus::Cancelled);
     }
 }
 

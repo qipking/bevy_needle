@@ -65,10 +65,18 @@ impl FfiEngine {
         // transmute 到的签名与引擎 C ABI 逐一核对（见模块级文档与
         // third_party/needle/3.0.1/needle.h）。
         let init: RawInit = unsafe { std::mem::transmute(lib.symbol("needle_init")?) };
-        let complete: RawComplete = unsafe { std::mem::transmute(lib.symbol("needle_complete")?) };
-        let reset: RawReset = unsafe { std::mem::transmute(lib.symbol("needle_reset")?) };
-        let load: RawLoad = unsafe { std::mem::transmute(lib.symbol("needle_load")?) };
-        let embed: RawEmbed = unsafe { std::mem::transmute(lib.symbol("needle_embed")?) };
+        let complete: RawComplete =
+            // SAFETY: 同上——符号指针来自已加载的库，签名与 needle.h 逐一核对。
+            unsafe { std::mem::transmute(lib.symbol("needle_complete")?) };
+        let reset: RawReset =
+            // SAFETY: 同上——符号指针来自已加载的库，签名与 needle.h 逐一核对。
+            unsafe { std::mem::transmute(lib.symbol("needle_reset")?) };
+        let load: RawLoad =
+            // SAFETY: 同上——符号指针来自已加载的库，签名与 needle.h 逐一核对。
+            unsafe { std::mem::transmute(lib.symbol("needle_load")?) };
+        let embed: RawEmbed =
+            // SAFETY: 同上——符号指针来自已加载的库，签名与 needle.h 逐一核对。
+            unsafe { std::mem::transmute(lib.symbol("needle_embed")?) };
 
         Ok(Self {
             _lib: lib,

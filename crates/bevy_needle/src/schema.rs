@@ -3,8 +3,8 @@
 //! Needle 的解码器按声明的 schema 生成字节级语法约束：schema 描述得越
 //! 精确（枚举、上下界），模型的输出就越可靠。本模块提供：
 //!
-//! - [`normalize_tool_schema`]: 校验并规范化 `ToolSpec` 中的 parameters；
-//! - [`ParametersBuilder`]: 便于游戏代码声明参数的构建器（枚举/区间/长度）。
+//! - 通过 [`normalize_tool_schema`] 校验并规范化 `ToolSpec` 中的 parameters；
+//! - 借助 [`ParametersBuilder`] 便于游戏代码声明参数（枚举/区间/长度）。
 
 use serde_json::{Map, Value, json};
 
@@ -18,6 +18,11 @@ pub struct ToolSchemaError(pub String);
 /// - `type` 必须为 `"object"`（缺省时补全）；
 /// - `properties` 必须是对象（缺省时补全为空对象）;
 /// - `required` 中的每个名字必须出现在 `properties` 里。
+///
+/// # Panics
+///
+/// 若 `parameters` 已判定为对象后取 `as_object_mut` 却失败
+///（内部不变量，前置检查保证不会发生）。
 pub fn normalize_tool_schema(parameters: &Value) -> Result<Value, ToolSchemaError> {
     let mut params = parameters.clone();
     if !params.is_object() {
@@ -55,10 +60,10 @@ pub fn normalize_tool_schema(parameters: &Value) -> Result<Value, ToolSchemaErro
                 .collect()
         })
         .unwrap_or_default();
-    if let Some(raw_required) = obj.get("required") {
-        if !raw_required.is_array() {
-            return Err(ToolSchemaError("required 必须是字符串数组".into()));
-        }
+    if let Some(raw_required) = obj.get("required")
+        && !raw_required.is_array()
+    {
+        return Err(ToolSchemaError("required 必须是字符串数组".into()));
     }
     for name in &required_names {
         let defined = obj.get("properties").and_then(|p| p.get(name)).is_some();

@@ -154,18 +154,18 @@ pub struct NeedleEngineConfig(pub EngineConfig);
 /// let mut app = App::new();
 /// app.add_plugins(BevyNeedlePlugin::default());
 /// ```
+#[derive(Clone, Default)]
 pub struct BevyNeedlePlugin {
     /// `config`（语义见类型文档）。
     pub config: EngineConfig,
     backend: Option<std::sync::Arc<dyn NeedleBackend>>,
 }
 
-impl Default for BevyNeedlePlugin {
-    fn default() -> Self {
-        Self {
-            config: EngineConfig::default(),
-            backend: None,
-        }
+impl std::fmt::Debug for BevyNeedlePlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BevyNeedlePlugin")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
     }
 }
 
@@ -416,11 +416,11 @@ pub fn execute_needle_runs(world: &mut World) {
         let mut messages = world.resource_mut::<Messages<ResetAgent>>();
         messages.drain().collect()
     };
-    if !resets.is_empty() {
-        if let Some(runtime) = world.get_resource::<NeedleRuntime>() {
-            for _ in resets {
-                runtime.submit_reset();
-            }
+    if !resets.is_empty()
+        && let Some(runtime) = world.get_resource::<NeedleRuntime>()
+    {
+        for _ in resets {
+            runtime.submit_reset();
         }
     }
 
@@ -468,7 +468,7 @@ pub fn execute_needle_runs(world: &mut World) {
             .filter(|(_, _, _, status, in_flight, finalized)| {
                 **status == RunStatus::Queued && in_flight.is_none() && finalized.is_none()
             })
-            .map(|(run, input, owner, _, _, _)| (run, input.clone(), owner.clone()))
+            .map(|(run, input, owner, _, _, _)| (run, input.clone(), *owner))
             .collect()
     };
 
@@ -667,8 +667,6 @@ fn handle_turn_completed(world: &mut World, run: Entity, response: crate::engine
 
     let mut diagnostics = world.resource_mut::<RuntimeDiagnostics>();
     diagnostics.tool_calls_total += expected as u64;
-    drop(diagnostics);
-
     if let Ok(mut entity) = world.get_entity_mut(run) {
         // RunTurn 保持为“当前轮”；resolve 回喂下一轮时才自增
         entity.insert(RunAwaitingTools { expected });
