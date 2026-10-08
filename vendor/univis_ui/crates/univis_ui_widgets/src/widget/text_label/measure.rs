@@ -10,8 +10,8 @@ use bevy::asset::{AssetEvent, Assets};
 use bevy::ecs::relationship::Relationship;
 use bevy::prelude::*;
 use bevy::text::{
-    ComputedTextBlock, FontCx, LayoutCx, LineBreak, LineHeight, LetterSpacing, TextBounds, TextFont,
-    TextLayout, TextPipeline,
+    ComputedTextBlock, FontCx, LayoutCx, LetterSpacing, LineBreak, LineHeight, TextBounds,
+    TextFont, TextLayout, TextPipeline,
 };
 use std::collections::HashSet;
 use unicode_bidi::BidiInfo;

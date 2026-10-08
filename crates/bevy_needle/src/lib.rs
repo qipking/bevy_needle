@@ -80,11 +80,11 @@ pub mod agent;
 pub mod app;
 pub mod backend;
 pub mod diagnostics;
-#[cfg(feature = "escalate")]
-pub mod escalate;
 pub mod engine;
 pub mod engine_index;
 pub mod error;
+#[cfg(feature = "escalate")]
+pub mod escalate;
 #[cfg(feature = "dlopen")]
 pub mod ffi;
 #[cfg(feature = "dlopen")]
@@ -105,6 +105,9 @@ pub use app::{
     RunExecutionSystems, RunPreparation, RunPreparationSystems, Telemetry, ToolDispatchSystems,
 };
 pub use backend::{MockBackend, NeedleBackend};
-pub use engine::{EngineGeneration, library_file_name, NeedleFunctionCall, NeedleResponse, DEFAULT_BUFFER_SIZE, ENGINE_VERSION,};
+pub use engine::{
+    DEFAULT_BUFFER_SIZE, ENGINE_VERSION, EngineGeneration, NeedleFunctionCall, NeedleResponse,
+    library_file_name,
+};
 pub use error::{NeedleError, NeedleRunError};
 pub use run::RunExecutedResults;

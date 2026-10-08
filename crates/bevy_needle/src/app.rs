@@ -10,31 +10,30 @@
 //! Telemetry           （预留）诊断刷新钩子
 //! ```
 
-use std::path::PathBuf;
 use bevy_app::{App, MainScheduleOrder, Plugin, Update};
 use bevy_ecs::{
     prelude::*,
     schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel},
 };
+use std::path::PathBuf;
 
 use crate::{
     backend::NeedleBackend,
     diagnostics::RuntimeDiagnostics,
     engine::discover_library,
-    engine_index::{rebuild_agent_tool_index, AgentToolIndex},
+    engine_index::{AgentToolIndex, rebuild_agent_tool_index},
     needle_runtime::{NeedleRuntime, RuntimeEvent, TurnJob},
     run::{
-        cancel_runs, capture_run_requests, mark_run_completed, mark_run_escalated,
-        mark_run_escalating, mark_run_failed, persist_cancelled_runs, persist_completed_runs,
-        persist_escalated_runs, persist_failed_runs, CancelRun, ResetAgent, RunAgent,
-        RunAwaitingTools, RunEngineInFlight, RunEscalated, RunEscalation, RunFinalized, RunNote,
-        RunOwner, RunPendingInput, RunLastResponse, RunStatus, RunTurn,
+        CancelRun, ResetAgent, RunAgent, RunAwaitingTools, RunEngineInFlight, RunEscalated,
+        RunEscalation, RunFinalized, RunLastResponse, RunNote, RunOwner, RunPendingInput,
+        RunStatus, RunTurn, cancel_runs, capture_run_requests, mark_run_completed,
+        mark_run_escalated, mark_run_escalating, mark_run_failed, persist_cancelled_runs,
+        persist_completed_runs, persist_escalated_runs, persist_failed_runs,
     },
     tool::{
+        ToolCall, ToolHandlers, ToolInvocationBundle, ToolInvocationCall, ToolInvocationError,
+        ToolInvocationOutput, ToolInvocationStatus, ToolInvocationTurn, ToolOutput, ToolRegistry,
         dispatch_registered_tool_calls, publish_tool_invocation_results, rebuild_tool_registry,
-        ToolCall, ToolHandlers, ToolInvocationBundle, ToolInvocationCall,
-        ToolInvocationError, ToolInvocationOutput, ToolInvocationStatus, ToolInvocationTurn,
-        ToolOutput, ToolRegistry,
     },
 };
 
@@ -85,7 +84,6 @@ pub struct RunResolutionSystems;
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
 /// `RunCommitSystems`（见类型级与模块级文档）。
 pub struct RunCommitSystems;
-
 
 /// 引擎配置：显式库路径 / 调优权重 / 缓冲大小。
 #[derive(Clone, Debug, Default)]
@@ -204,7 +202,9 @@ impl Plugin for BevyNeedlePlugin {
             }
         };
 
-        let buffer_size = config.buffer_size.unwrap_or(crate::engine::DEFAULT_BUFFER_SIZE);
+        let buffer_size = config
+            .buffer_size
+            .unwrap_or(crate::engine::DEFAULT_BUFFER_SIZE);
 
         // 三分支：注入后端 / dlopen 打开 / 不可用降级。
         // 引擎缺失不是 panic：状态标 Unavailable，run 会以清晰的错误失败。
@@ -222,15 +222,16 @@ impl Plugin for BevyNeedlePlugin {
                 Ok(path) => {
                     #[cfg(feature = "dlopen")]
                     match crate::backend::DlopenBackend::open_with_base_weights(
-                                &path,
-                                config
-                                    .base_weights_path
-                                    .clone()
-                                    .unwrap_or_else(crate::engine::default_base_weights_path),
-                                buffer_size,
-                            ) {
+                        &path,
+                        config
+                            .base_weights_path
+                            .clone()
+                            .unwrap_or_else(crate::engine::default_base_weights_path),
+                        buffer_size,
+                    ) {
                         Ok(backend) => {
-                            let backend: std::sync::Arc<dyn NeedleBackend> = std::sync::Arc::new(backend);
+                            let backend: std::sync::Arc<dyn NeedleBackend> =
+                                std::sync::Arc::new(backend);
                             // 权重在启动时一次性加载（引擎无法卸载）
                             if let Some(weights) = &config.weights_path {
                                 match std::fs::read(weights) {
@@ -607,9 +608,7 @@ fn handle_turn_completed(world: &mut World, run: Entity, response: crate::engine
                 world,
                 run,
                 0,
-                format!(
-                    "置信度 {confidence:.2} 低于门限 {threshold:.2}，调用未执行（升级契约）"
-                ),
+                format!("置信度 {confidence:.2} 低于门限 {threshold:.2}，调用未执行（升级契约）"),
             );
             return;
         }
@@ -747,22 +746,27 @@ pub fn resolve_run_tool_turns(world: &mut World) {
             Option<&ToolInvocationOutput>,
             Option<&ToolInvocationError>,
         )>();
-        let mut rows: Vec<(u64, ToolCall, ToolInvocationStatus, ToolOutput, Option<String>)> =
-            query
-                .iter(world)
-                .filter(|(_, call, _, invocation_turn, _, _)| {
-                    call.0.run == run && invocation_turn.0 == current_turn
-                })
-                .map(|(entity, call, status, _, output, error)| {
-                    (
-                        entity.to_bits(),
-                        call.0.clone(),
-                        *status,
-                        output.map(|o| o.0.clone()).unwrap_or_default(),
-                        error.map(|e| e.0.clone()),
-                    )
-                })
-                .collect();
+        let mut rows: Vec<(
+            u64,
+            ToolCall,
+            ToolInvocationStatus,
+            ToolOutput,
+            Option<String>,
+        )> = query
+            .iter(world)
+            .filter(|(_, call, _, invocation_turn, _, _)| {
+                call.0.run == run && invocation_turn.0 == current_turn
+            })
+            .map(|(entity, call, status, _, output, error)| {
+                (
+                    entity.to_bits(),
+                    call.0.clone(),
+                    *status,
+                    output.map(|o| o.0.clone()).unwrap_or_default(),
+                    error.map(|e| e.0.clone()),
+                )
+            })
+            .collect();
         rows.sort_by_key(|(bits, _, _, _, _)| *bits);
 
         let terminal = rows
@@ -839,7 +843,9 @@ pub fn resolve_run_tool_turns(world: &mut World) {
         });
         if ok {
             if let Ok(mut entity) = world.get_entity_mut(run) {
-                entity.insert(RunEngineInFlight).insert(RunTurn(current_turn + 1));
+                entity
+                    .insert(RunEngineInFlight)
+                    .insert(RunTurn(current_turn + 1));
             }
         } else {
             world.resource_mut::<RuntimeDiagnostics>().channel_broken = true;

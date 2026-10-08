@@ -20,7 +20,9 @@ fn terminal_user_text_is_input() {
 fn tool_results_batch_becomes_array() {
     let id = rig_core::message::CallId::from_wire("needle-local-0");
     let name = rig_core::message::ToolName::new("APP.change_pitch").expect("name");
-    let content = vec![ToolResultContent::Json { value: json!({"ok": true}) }];
+    let content = vec![ToolResultContent::Json {
+        value: json!({"ok": true}),
+    }];
     let result = rig_core::completion::message::ToolResult {
         call: id,
         name: name.clone(),
@@ -36,7 +38,7 @@ fn tool_results_batch_becomes_array() {
     assert_eq!(parsed.as_array().expect("array").len(), 1);
     // ToolResultContent 带 `type: json` 标签序列化——Needle 收到的数组元素
     // 是 Rig 规范形态；worker 侧拆出内层 value（见 tool_results_input 语义）。
-        // §11 官方语义：数组元素是**每个工具返回的 JSON 值本身**——Rig 的
+    // §11 官方语义：数组元素是**每个工具返回的 JSON 值本身**——Rig 的
     // `type`/`call`/`name` 元数据不进 Needle 输入。
     assert_eq!(parsed[0], json!({"ok": true}));
 }
@@ -54,9 +56,9 @@ fn max_tokens_is_capped_to_u32() {
 
 #[test]
 fn assistant_terminated_history_is_rejected() {
-    let req = request(vec![Message::Assistant(rig_core::completion::message::AssistantMessage::new(
-        vec![AssistantContent::text("done")],
-    ))]);
+    let req = request(vec![Message::Assistant(
+        rig_core::completion::message::AssistantMessage::new(vec![AssistantContent::text("done")]),
+    )]);
     assert!(encode_payload(&req).is_err());
 }
 
@@ -120,7 +122,9 @@ fn envelope_call_becomes_tool_calls() {
 
 #[test]
 fn tool_results_input_roundtrip() {
-    let content = vec![ToolResultContent::Json { value: json!({"volume_db": -3}) }];
+    let content = vec![ToolResultContent::Json {
+        value: json!({"volume_db": -3}),
+    }];
     let text = tool_results_input(&content).expect("serialize");
     let parsed: serde_json::Value = serde_json::from_str(&text).expect("array");
     assert_eq!(parsed, json!([{"volume_db": -3}]));

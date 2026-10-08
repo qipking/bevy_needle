@@ -6,7 +6,7 @@
 //! - [`normalize_tool_schema`]: 校验并规范化 `ToolSpec` 中的 parameters；
 //! - [`ParametersBuilder`]: 便于游戏代码声明参数的构建器（枚举/区间/长度）。
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 #[derive(Debug, thiserror::Error)]
 #[error("工具 schema 无效: {0}")]
@@ -31,7 +31,7 @@ pub fn normalize_tool_schema(parameters: &Value) -> Result<Value, ToolSchemaErro
         Some(other) => {
             return Err(ToolSchemaError(format!(
                 "parameters.type 必须是 \"object\"，得到: {other}"
-            )))
+            )));
         }
         None => {
             obj.insert("type".into(), json!("object"));
@@ -84,7 +84,13 @@ impl ParametersBuilder {
         Self::default()
     }
 
-    fn push(&mut self, name: &str, mut schema: Value, description: &str, required: bool) -> &mut Self {
+    fn push(
+        &mut self,
+        name: &str,
+        mut schema: Value,
+        description: &str,
+        required: bool,
+    ) -> &mut Self {
         if !description.is_empty() {
             schema["description"] = Value::String(description.to_string());
         }
@@ -154,7 +160,9 @@ impl ParametersBuilder {
     /// 构造/执行入口（错误经 `Result` 返回，不 panic）。
     pub fn required(mut self, names: &[&str]) -> Self {
         for name in names {
-            if !self.required.iter().any(|existing| existing == name) && self.properties.contains_key(*name) {
+            if !self.required.iter().any(|existing| existing == name)
+                && self.properties.contains_key(*name)
+            {
                 self.required.push((*name).to_string());
             }
         }
@@ -173,8 +181,7 @@ impl ParametersBuilder {
 
 /// 把一组规范化后的 schema 序列化成 `needle_init` 需要的 JSON 数组字符串。
 pub fn tools_json(schemas: &[Value]) -> Result<String, ToolSchemaError> {
-    serde_json::to_string(schemas)
-        .map_err(|e| ToolSchemaError(format!("序列化失败: {e}")))
+    serde_json::to_string(schemas).map_err(|e| ToolSchemaError(format!("序列化失败: {e}")))
 }
 
 #[cfg(test)]
@@ -205,6 +212,9 @@ mod tests {
             .build();
         let normalized = normalize_tool_schema(&params).unwrap();
         assert_eq!(normalized["required"], json!(["target", "value"]));
-        assert_eq!(normalized["properties"]["target"]["enum"], json!(["title", "status"]));
+        assert_eq!(
+            normalized["properties"]["target"]["enum"],
+            json!(["title", "status"])
+        );
     }
 }

@@ -67,7 +67,9 @@ fn main() {
     // ── ResetAgent：引擎侧回退（KV 清零），工具集保留 ──
     // 转录是历史镜像，所以"清空引擎记忆"并不会删除已落盘的消息。
     // 重置后的下一轮：引擎从"全新会话"开始（mock 看不出区别，真引擎有效）。
-    app.world_mut().write_message(ResetAgent { agent: handles.agent });
+    app.world_mut().write_message(ResetAgent {
+        agent: handles.agent,
+    });
     app.world_mut()
         .write_message(RunAgent::new(handles.agent, "say something after reset"));
     drive_until(&mut app, handles.agent, 300);
@@ -110,7 +112,9 @@ fn drive_until(app: &mut App, agent: Entity, max_frames: usize) {
 }
 
 fn finalized(app: &mut App, agent: Entity) -> usize {
-    let mut q = app.world_mut().query::<(&RunOwner, &RunStatus, Option<&RunFinalized>)>();
+    let mut q = app
+        .world_mut()
+        .query::<(&RunOwner, &RunStatus, Option<&RunFinalized>)>();
     q.iter(app.world())
         .filter(|(o, s, f)| {
             o.0 == agent && matches!(s, RunStatus::Completed | RunStatus::Failed) && f.is_some()

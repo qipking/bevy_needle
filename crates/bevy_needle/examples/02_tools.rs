@@ -18,7 +18,7 @@
 use bevy_app::App;
 use bevy_ecs::prelude::*;
 use bevy_needle::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ───────────────────────────────────────────────────────────────────────────
 // 2.3 handler 写法之二：普通函数。只要签名匹配就能注册，逻辑复杂时比闭包清晰。
@@ -33,7 +33,9 @@ fn div_handler(call: &ToolCall) -> ToolExecutionResult {
         // 业务失败 → Err。信息会以 {"error": "..."} 回喂，模型能读懂并重试。
         // 注意与 panic 的区别：panic 是"程序 bug"，会被 catch_unwind 兜住，
         // 但正确做法是把可预期的失败写成 Err。
-        return Err(ToolExecutionError::new(format!("cannot divide {a} by zero")));
+        return Err(ToolExecutionError::new(format!(
+            "cannot divide {a} by zero"
+        )));
     }
     Ok(ToolOutput::json(json!({ "quotient": a / b })))
 }
@@ -154,7 +156,11 @@ fn main() {
 
     // 校验：normalized_parameters 会跑与 EngineSync 相同的校验 ——
     // 提前在代码里发现手写 schema 的错误（required 引用不存在的属性等）。
-    if let Err(err) = world.get::<ToolSpec>(div_tool).unwrap().normalized_parameters() {
+    if let Err(err) = world
+        .get::<ToolSpec>(div_tool)
+        .unwrap()
+        .normalized_parameters()
+    {
         panic!("手写 schema 校验失败: {err}");
     }
 
@@ -163,9 +169,17 @@ fn main() {
     register_tool_handler(world, "player_action", |call| {
         // 枚举值一定合法（语法保证），可以直接 expect 吗？不要 ——
         // mock/引擎版本差异可能给你意外值，防御性读取永远没错。
-        let action = call.args.get("action").and_then(Value::as_str).unwrap_or("wave");
+        let action = call
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("wave");
         let power = call.args.get("power").and_then(Value::as_i64).unwrap_or(50);
-        let shout = call.args.get("shout").and_then(Value::as_bool).unwrap_or(false);
+        let shout = call
+            .args
+            .get("shout")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         // 这里就是游戏逻辑的位置：突变组件请通过消息回执（04_lifecycle），
         // 纯函数 handler 只做计算/校验/转发。
@@ -196,13 +210,14 @@ fn main() {
     // 发 5 条指令对应脚本 5 轮（每条消息一个 run，顺序执行）。
     let queries = [
         "jump with power 80",
-        "divide 1 by 0",           // → Err 路径
-        "divide 9 by 3",           // → 模型自纠后的成功
-        "teleport to the moon",    // → 未知工具路径
-        "do the risky thing",      // → panic 路径
+        "divide 1 by 0",        // → Err 路径
+        "divide 9 by 3",        // → 模型自纠后的成功
+        "teleport to the moon", // → 未知工具路径
+        "do the risky thing",   // → panic 路径
     ];
     for q in queries {
-        app.world_mut().write_message(RunAgent::new(handles.agent, q));
+        app.world_mut()
+            .write_message(RunAgent::new(handles.agent, q));
     }
 
     // 驱动到全部 run 终结。
@@ -214,7 +229,10 @@ fn main() {
             .world_mut()
             .query::<(&RunStatus, Option<&RunFinalized>)>()
             .iter(app.world())
-            .any(|(s, fin)| matches!(s, RunStatus::Queued | RunStatus::Running) || (matches!(s, RunStatus::Completed | RunStatus::Failed) && fin.is_none()));
+            .any(|(s, fin)| {
+                matches!(s, RunStatus::Queued | RunStatus::Running)
+                    || (matches!(s, RunStatus::Completed | RunStatus::Failed) && fin.is_none())
+            });
         if !pending || frames > 2000 {
             break;
         }
@@ -241,8 +259,14 @@ fn main() {
     // 断言覆盖四个路径：
     // ① player_action 成功；② div 首次除零失败 + 自纠成功；
     // ③ 未知工具立即失败；④ panic 被兜住转 Failed。
-    let ok = ledger.iter().filter(|(_, s)| matches!(s, ToolInvocationStatus::Completed)).count();
-    let bad = ledger.iter().filter(|(_, s)| matches!(s, ToolInvocationStatus::Failed)).count();
+    let ok = ledger
+        .iter()
+        .filter(|(_, s)| matches!(s, ToolInvocationStatus::Completed))
+        .count();
+    let bad = ledger
+        .iter()
+        .filter(|(_, s)| matches!(s, ToolInvocationStatus::Failed))
+        .count();
     println!("╰── 成功 {ok} / 失败 {bad}");
     assert_eq!(ok, 2, "player_action 与自纠后的 div 应成功");
     assert_eq!(bad, 3, "除零、未知工具、panic 各贡献一次失败");

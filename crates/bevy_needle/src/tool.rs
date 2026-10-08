@@ -9,8 +9,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -18,7 +18,7 @@ use bevy_ecs::{message::Messages, prelude::*};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::schema::{normalize_tool_schema, ToolSchemaError};
+use crate::schema::{ToolSchemaError, normalize_tool_schema};
 
 static NEXT_TOOL_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -31,15 +31,12 @@ pub struct Tool;
 pub struct ToolSpec {
     /// 工具名（引擎语法约束与调用回喂的键）。
 
-        /// 工具名。
-
-        pub name: String,
+    /// 工具名。
+    pub name: String,
     /// 工具描述：模型据此选择调用与填充参数。
-
-        pub description: String,
+    pub description: String,
     /// JSON Schema 的 `parameters`（object）。
-
-        pub parameters: Value,
+    pub parameters: Value,
 }
 
 impl ToolSpec {
@@ -92,19 +89,15 @@ impl ToolBundle {
 #[derive(Clone, Debug)]
 pub struct ToolCall {
     /// 发起该调用的 run 实体。
-
-        pub run: Entity,
+    pub run: Entity,
     /// 解析到的工具实体（未知工具为占位符）。
-
-        pub tool: Entity,
+    pub tool: Entity,
     /// `name`（语义见类型文档）。
     pub name: String,
     /// 稳定唯一 ID（run/tool/nonce 组合）。
-
-        pub call_id: String,
+    pub call_id: String,
     /// 模型给出的参数对象。
-
-        pub args: Value,
+    pub args: Value,
 }
 
 impl ToolCall {
@@ -115,7 +108,11 @@ impl ToolCall {
             run,
             tool,
             name: name.into(),
-            call_id: format!("run{:x}-tool{:x}-call{nonce}", run.to_bits(), tool.to_bits()),
+            call_id: format!(
+                "run{:x}-tool{:x}-call{nonce}",
+                run.to_bits(),
+                tool.to_bits()
+            ),
             args,
         }
     }
@@ -125,8 +122,7 @@ impl ToolCall {
 #[derive(Clone, Debug, Default)]
 pub struct ToolOutput {
     /// 回喂给引擎的 JSON 值。
-
-        pub value: Value,
+    pub value: Value,
 }
 
 impl ToolOutput {
@@ -160,8 +156,7 @@ impl ToolOutput {
 /// `ToolExecutionError`（见类型级与模块级文档）。
 pub struct ToolExecutionError {
     /// 人类可读错误信息。
-
-        pub message: String,
+    pub message: String,
 }
 
 impl ToolExecutionError {
@@ -225,7 +220,7 @@ pub fn register_tool_handler(
 /// - `RegistryHandler`: 由内置分发系统执行 [`ToolHandlers`] 里的 handler；
 /// - `External`: 留给游戏自己的系统（在 [`ToolDispatchSystems`] 集内处理）。
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-    /// 由插件内置分发系统执行 `ToolHandlers` 中注册的纯函数。
+/// 由插件内置分发系统执行 `ToolHandlers` 中注册的纯函数。
 pub enum ToolDispatchPolicy {
     /// 由插件内置分发系统执行 `ToolHandlers` 中注册的纯函数。
     #[default]
@@ -241,9 +236,9 @@ pub struct ToolInvocation;
 #[derive(Component, Clone, Debug)]
 /// 调用载荷。
 
-    /// 已入队等待分发。
+/// 已入队等待分发。
 pub struct ToolInvocationCall(pub ToolCall);
-    /// 执行成功。
+/// 执行成功。
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 /// `ToolInvocationStatus`（见类型级与模块级文档）。
@@ -418,7 +413,8 @@ pub fn dispatch_registered_tool_calls(world: &mut World) {
         query
             .iter(world)
             .filter(|(_, _, status, policy)| {
-                **status == ToolInvocationStatus::Queued && **policy == ToolDispatchPolicy::RegistryHandler
+                **status == ToolInvocationStatus::Queued
+                    && **policy == ToolDispatchPolicy::RegistryHandler
             })
             .filter_map(|(entity, call, _, _)| {
                 handlers
@@ -433,11 +429,7 @@ pub fn dispatch_registered_tool_calls(world: &mut World) {
     for (invocation, call, handler) in pending {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&call)));
         match result {
-            Ok(Ok(output)) => complete_tool_invocation(
-                world,
-                invocation,
-                output,
-            ),
+            Ok(Ok(output)) => complete_tool_invocation(world, invocation, output),
             Ok(Err(error)) => fail_tool_invocation(world, invocation, error.message),
             Err(panic) => {
                 let message = panic_message(panic);
