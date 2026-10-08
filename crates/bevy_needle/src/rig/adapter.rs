@@ -29,9 +29,9 @@ pub fn needle3_model(
 
 #[cfg(feature = "rig-ecs")]
 mod ecs {
-    use rig_ecs::bus::Handlers;
     use rig_core::driver::DynModel;
     use rig_core::serve::adapters::ModelAdapter;
+    use rig_ecs::bus::Handlers;
 
     use super::Needle3Model;
     use crate::rig::NEEDLE_LABEL;
@@ -50,7 +50,10 @@ mod ecs {
         key: impl Into<rig_core::effect::HandlerKey>,
         model: Needle3Model,
     ) -> Result<bevy_ecs::entity::Entity, rig_core::error::ErrorReport> {
-        handlers.register(key, ModelAdapter::new(NEEDLE_LABEL, DynModel::from(model.into_inner())))
+        handlers.register(
+            key,
+            ModelAdapter::new(NEEDLE_LABEL, DynModel::from(model.into_inner())),
+        )
     }
 }
 

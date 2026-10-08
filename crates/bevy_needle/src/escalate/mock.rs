@@ -5,8 +5,8 @@
 //! - `escalate` feature 单独启用时的状态机测试（无需 rig）；
 //! - 游戏侧做「升级路径」教学与验收。
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::bus::DriverEventBus;
 use super::driver::{
@@ -161,14 +161,17 @@ impl Driver for MockDriver {
             },
             MockStep::Pending => {
                 // 挂起：不回灌，等 release()。
-                self.held.lock().expect("mock held poisoned").push(DriverEvent {
-                    run: ctx.run,
-                    epoch: ctx.epoch,
-                    driver: self.id,
-                    outcome: DriverOutcome::Succeeded {
-                        output: "released late".into(),
-                    },
-                });
+                self.held
+                    .lock()
+                    .expect("mock held poisoned")
+                    .push(DriverEvent {
+                        run: ctx.run,
+                        epoch: ctx.epoch,
+                        driver: self.id,
+                        outcome: DriverOutcome::Succeeded {
+                            output: "released late".into(),
+                        },
+                    });
                 return Ok(handle);
             }
         };

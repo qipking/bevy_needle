@@ -84,29 +84,43 @@ fn main() {
     app.insert_resource(Probe::default());
     // EngineSync 之前的挂点需要系统签名，用一个本地标记系统演示。
     fn probe_pre_sync(mut p: ResMut<Probe>) {
-    p.0.push('P');
-}
+        p.0.push('P');
+    }
     // RunOnce 条件：每个探针系统只运行一次（首帧），序列自然封顶。
     // 这是 bevy 的惯用方案（bevy_ecs::schedule::RunOnce）。
     app.add_systems(
         EngineSync,
-        probe_pre_sync.before(EngineSyncSystems).run_if(run_once_cond),
+        probe_pre_sync
+            .before(EngineSyncSystems)
+            .run_if(run_once_cond),
     );
     app.add_systems(
         RunPreparation,
-        probe_pre_run.before(RunPreparationSystems).run_if(run_once_cond),
+        probe_pre_run
+            .before(RunPreparationSystems)
+            .run_if(run_once_cond),
     );
     app.add_systems(
         RunExecution,
-        probe_pre_dispatch.before(ToolDispatchSystems).run_if(run_once_cond),
+        probe_pre_dispatch
+            .before(ToolDispatchSystems)
+            .run_if(run_once_cond),
     );
     app.add_systems(
         RunExecution,
-        probe_post_resolve.after(RunResolutionSystems).run_if(run_once_cond),
+        probe_post_resolve
+            .after(RunResolutionSystems)
+            .run_if(run_once_cond),
     );
     app.add_systems(
         RunCommit,
-        probe_commit.after(RunCommitSystems).run_if(|mut has_run: Local<bool>| { let r = !*has_run; *has_run = true; r }),
+        probe_commit
+            .after(RunCommitSystems)
+            .run_if(|mut has_run: Local<bool>| {
+                let r = !*has_run;
+                *has_run = true;
+                r
+            }),
     );
 
     // 自定义调度段：注册 + 排进主循环（Telemetry 之后）。
@@ -114,7 +128,9 @@ fn main() {
     // 追加用 insert_after。
     app.add_schedule(bevy_ecs::schedule::Schedule::new(MyArchive));
     {
-        let mut order = app.world_mut().resource_mut::<bevy_app::MainScheduleOrder>();
+        let mut order = app
+            .world_mut()
+            .resource_mut::<bevy_app::MainScheduleOrder>();
         order.insert_after(Telemetry, MyArchive);
     }
     app.add_systems(
@@ -144,7 +160,8 @@ fn main() {
     // 引擎缺失时的对照（注释掉 with_backend 即可体验）：
     // run 会以「needle 引擎不可用（…）。请设置 NEEDLE_LIB_PATH …」失败。
 
-    app.world_mut().write_message(RunAgent::new(handles.agent, "ping"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "ping"));
     for _ in 0..200 {
         app.update();
     }
@@ -154,11 +171,15 @@ fn main() {
     println!("╭── RuntimeDiagnostics");
     println!("│  engine_path      = {:?}", d.engine_path);
     println!("│  engine_ready     = {}", d.engine_ready);
-    println!("│  runs             = started {} / done {} / failed {} / cancelled {}",
-        d.runs_started, d.runs_completed, d.runs_failed, d.runs_cancelled);
+    println!(
+        "│  runs             = started {} / done {} / failed {} / cancelled {}",
+        d.runs_started, d.runs_completed, d.runs_failed, d.runs_cancelled
+    );
     println!("│  turns            = {}", d.turns_completed);
-    println!("│  tool_calls       = total {} / ok {} / failed {}",
-        d.tool_calls_total, d.tool_calls_completed, d.tool_calls_failed);
+    println!(
+        "│  tool_calls       = total {} / ok {} / failed {}",
+        d.tool_calls_total, d.tool_calls_completed, d.tool_calls_failed
+    );
     println!("│  last_confidence  = {:?}", d.last_confidence);
     println!("│  last_decode_tps  = {:?}", d.last_decode_tps);
     println!("│  peak_ram_mb      = {:?}", d.peak_ram_mb);

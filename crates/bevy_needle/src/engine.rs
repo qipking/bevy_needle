@@ -212,7 +212,9 @@ pub fn discover_library_for(
         }
         tried.push(candidate.display().to_string());
     }
-    Err(NeedleError::EngineNotFound { tried: tried.join(", ") })
+    Err(NeedleError::EngineNotFound {
+        tried: tried.join(", "),
+    })
 }
 
 /// needle3 基础权重（`needle3.cact`）的默认发现路径

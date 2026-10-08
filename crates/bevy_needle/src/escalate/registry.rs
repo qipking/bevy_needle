@@ -274,7 +274,9 @@ mod tests {
     #[test]
     fn duplicate_driver_id_is_rejected_not_overwritten() {
         let mut registry = DriverRegistry::default();
-        registry.register(driver("a", EscalationTarget::Local)).unwrap();
+        registry
+            .register(driver("a", EscalationTarget::Local))
+            .unwrap();
         let err = registry
             .register(driver("a", EscalationTarget::Remote))
             .unwrap_err();
@@ -286,8 +288,12 @@ mod tests {
     #[test]
     fn bind_tier_is_transactional_and_rejects_conflicts() {
         let mut registry = DriverRegistry::default();
-        registry.register(driver("a", EscalationTarget::Local)).unwrap();
-        registry.register(driver("b", EscalationTarget::Remote)).unwrap();
+        registry
+            .register(driver("a", EscalationTarget::Local))
+            .unwrap();
+        registry
+            .register(driver("b", EscalationTarget::Remote))
+            .unwrap();
 
         registry.bind_tier(0, DriverId("a")).unwrap();
         // 重复绑定 → 错误且不改变原绑定
@@ -321,8 +327,12 @@ mod tests {
     #[test]
     fn rebind_tier_explicitly_overwrites() {
         let mut registry = DriverRegistry::default();
-        registry.register(driver("a", EscalationTarget::Local)).unwrap();
-        registry.register(driver("b", EscalationTarget::Local)).unwrap();
+        registry
+            .register(driver("a", EscalationTarget::Local))
+            .unwrap();
+        registry
+            .register(driver("b", EscalationTarget::Local))
+            .unwrap();
         registry.bind_tier(0, DriverId("a")).unwrap();
         registry.rebind_tier(0, DriverId("b")).unwrap();
         assert_eq!(registry.driver_id_for_tier(0), Some(DriverId("b")));
@@ -336,13 +346,13 @@ mod tests {
     fn convenience_register_is_atomic_on_bind_conflict() {
         // P0-1：新 driver + 已被他人绑定的 tier → Err，且**零残留**
         let mut registry = DriverRegistry::default();
-        registry.register(driver("owner", EscalationTarget::Local)).unwrap();
+        registry
+            .register(driver("owner", EscalationTarget::Local))
+            .unwrap();
         registry.bind_tier(0, DriverId("owner")).unwrap();
 
         let newcomer = driver("newcomer", EscalationTarget::Local);
-        let err = registry
-            .register_for_tier(newcomer, 0)
-            .unwrap_err();
+        let err = registry.register_for_tier(newcomer, 0).unwrap_err();
         assert_eq!(
             err,
             RegistryError::DuplicateTierBinding {
@@ -359,7 +369,9 @@ mod tests {
     #[test]
     fn precheck_rejects_conflicts_without_mutation() {
         let mut registry = DriverRegistry::default();
-        registry.register(driver("a", EscalationTarget::Local)).unwrap();
+        registry
+            .register(driver("a", EscalationTarget::Local))
+            .unwrap();
         registry.bind_tier(0, DriverId("a")).unwrap();
 
         // 重复 id 预检
@@ -425,7 +437,9 @@ mod tests {
         ));
         let err_combo = registry
             .register_for_tier(
-                std::sync::Arc::new(MockDriver::new("fresh").with_capability(EscalationTarget::Local)),
+                std::sync::Arc::new(
+                    MockDriver::new("fresh").with_capability(EscalationTarget::Local),
+                ),
                 0,
             )
             .unwrap_err();
