@@ -43,15 +43,22 @@ pub fn tool_key(name: &str) -> String {
     format!("tool:{name}")
 }
 
-/// 注册 Needle3 完成模型为 rig-ecs handler。
+/// 注册 Needle3 完成模型：**注册 + Local 分类同一事务**（§29.2 任务 A）。
+///
+/// Needle 是本地引擎（模型类别 [`ModelClass::Local`] 天然成立）；本助手在
+/// 注册成功后立即把 handler 实体写入 [`SecurityGuard`] 的分类表。剩余路径
+/// 上「未分类 → deny」（fail-closed）对宿主用原始 `Handlers::register`
+/// 绕过本助手的模型自动成立。
 ///
 /// `gate` 是可选的置信度门控 Layer（`after` 拒绝，拒绝点在 tool
 /// materialise 之前——§27.4）。返回 handler 实体（Agent 的 `UsesModel` 目标）。
 ///
+/// 需要先 `install_security_guard`（或等价地 `init_resource::<SecurityGuard>`）。
+///
 /// # Errors
 /// [`rig_core::error::ErrorReport`]——键被其它 family 占用等 registry 冲突。
-pub fn register_needle_model(
-    handlers: &mut Handlers<'_, '_>,
+pub fn register_local_model(
+    world: &mut bevy_ecs::world::World,
     label: &str,
     model: Needle3Model,
     gate: Option<super::gate::ConfidenceGate>,
@@ -64,7 +71,37 @@ pub fn register_needle_model(
         Some(gate) => rig_core::serve::ErasedHandler::new(adapter).layered(gate),
         None => rig_core::serve::ErasedHandler::new(adapter),
     };
-    handlers.register(needle_model_key(label), handler)
+    let entity = Handlers::with(world, |handlers| {
+        handlers.register(needle_model_key(label), handler)
+    })??;
+    // 注册+分类同事务（§29.2）：分类表写入紧随注册，同一助手调用内完成
+    //（护栏资源缺失时就地初始化——needle 属 Local 是类型级事实）。
+    world.init_resource::<super::SecurityGuard>();
+    world
+        .resource_mut::<super::SecurityGuard>()
+        .classify(entity, super::ModelClass::Local);
+    Ok(entity)
+}
+
+/// 注册一个**远端**模型 handler：**注册 + Remote 分类同一事务**
+/// （§29.2 任务 A；§26.7 语义——remote 可注册，LocalModelOnly 下永不选中）。
+///
+/// `handler` 是宿主提供的任意 rig `Serve` 实现（如 OpenAI 等 cloud 模型，
+/// 或测试哨兵）。LocalModelOnly 下被选中会被护栏拒绝。
+///
+/// # Errors
+/// [`rig_core::error::ErrorReport`]——键被其它 family 占用等 registry 冲突。
+pub fn register_remote_model(
+    world: &mut bevy_ecs::world::World,
+    key: impl Into<rig_core::effect::HandlerKey>,
+    handler: impl rig_core::serve::Serve + 'static,
+) -> Result<bevy_ecs::entity::Entity, rig_core::error::ErrorReport> {
+    let entity = Handlers::with(world, |handlers| handlers.register(key, handler))??;
+    world.init_resource::<super::SecurityGuard>();
+    world
+        .resource_mut::<super::SecurityGuard>()
+        .classify(entity, super::ModelClass::Remote);
+    Ok(entity)
 }
 
 /// G2-B1 纯工具轨：宿主直注的 rig 原生工具。
@@ -104,41 +141,55 @@ where
     handlers.register(tool_key(name), tool_fn)
 }
 
-/// G2-B2 World 工具轨：World 效果必须走 rig-ecs 的 World handler
-/// （§27.3 硬第二条——`Asked<E> → Bevy system（可 Query<&mut World>）→
-/// `Answer<E>` → Rig`，execution semantics 归 rig-ecs）。
+/// G2-B2 World 工具轨（§27.3 硬第二条）：ToolCall 的 World 效果走 **rig-ecs
+/// 的正典 world-served handler**——`Handlers::register_open(key, Tool family)`
+/// + 宿主系统提交 `WorldOutcome`（上游 CONTRACT §8.3；`Asked<E>`/`Answer<E>`
+/// 是 Custom effect 的通道——Tool family 的广告由 family descriptor 承担）。
 ///
-/// `E` 是宿主定义的 [`WorldEffect`]（`CustomEffect`：`]world`）——
-/// dispatch 落到 effect 实体上成为 `Asked<E>`；宿主系统读它、写 `Answer<E>`。
-///
-/// 定义样板（应用侧）：
+/// 广告面：Tool family descriptor（name/description/parameters）与 B1 同源；
+/// **执行面**：key 只绑到一个 world 系统——dispatch 的 effect 实体本身是
+/// "问题"，宿主系统读它的 `PendingEffect`（`EffectKind::ToolCall`），可以用
+/// **任意 World 访问**（含 `Query<&mut Selection>`），然后把
+/// [`rig_ecs::bus::WorldOutcome`] 插到 effect 实体上回答：
 ///
 /// ```ignore
-/// #[derive(serde::Serialize, serde::Deserialize)]
-/// struct SelectClip { clip_id: String }
-/// impl rig_core::effect::CustomEffect for SelectClip {
-///     const KIND: &'static str = "bevy_needle.tool:select_clip";
-///     type Answer = serde_json::Value;
+/// fn answer_select_clip(
+///     effects: Query<(Entity, &rig_ecs::bus::PendingEffect), Added<rig_ecs::bus::InFlight>>,
+///     selection: Query<&auk::Selection>,
+///     mut commands: Commands,
+/// ) {
+///     for (entity, effect) in &effects {
+///         let rig_core::effect::EffectKind::ToolCall { name, args } = &effect.kind else { continue };
+///         if name != "select_clip" { continue; }
+///         // …用 selection 做 Bevy 世界操作…
+///         commands.entity(entity).insert(rig_ecs::bus::WorldOutcome::new(
+///             Ok(rig_core::effect::Outcome::ToolResult {
+///                 result: rig_core::tool::ToolResult::success(
+///                     rig_core::tool::ToolOutput::json(json!({ "clipped": clip })),
+///                 ),
+///             }),
+///         ));
+///     }
 /// }
-///
-///  // 注册（startup）+ 应答（用户系统，可用 World 访问）：
-/// bevy_needle::rig::register_world_tool::<SelectClip>(handlers, "select_clip")?;
-/// //   effect 实体上出现 Asked<SelectClip> → 系统读它 → insert(Answer(v))
 /// ```
-///
-/// [`WorldEffect`]: rig_ecs::bus::WorldEffect
 ///
 /// # Errors
 /// [`rig_core::error::ErrorReport`]——registry 冲突。
-pub fn register_world_tool<E>(
+pub fn register_world_tool(
     handlers: &mut Handlers<'_, '_>,
     name: &str,
-) -> Result<bevy_ecs::entity::Entity, rig_core::error::ErrorReport>
-where
-    E: rig_ecs::bus::WorldEffect,
-{
-    // 显式 turbofish：`register_world` 的 E 无法从返回值推导。
-    handlers.register_world::<E>(tool_key(name))
+    description: &str,
+    parameters: serde_json::Value,
+) -> Result<bevy_ecs::entity::Entity, rig_core::error::ErrorReport> {
+    handlers.register_open(
+        tool_key(name),
+        rig_core::effect::FamilyDescriptor::Tool {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            parameters,
+            embedding: None,
+        },
+    )
 }
 
 /// Agent 装配输入（§17/§18：薄插件的数据面）。

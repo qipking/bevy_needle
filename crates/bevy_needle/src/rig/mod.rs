@@ -46,13 +46,16 @@ pub use worker::{Needle3Worker, Submitted, WaitFuture, WorkerError};
 
 #[cfg(feature = "rig-ecs")]
 pub use host::{
-    needle_model_key, register_needle_model,
-    // G2-B 双轨（§27.3）：B1 纯工具轨 / B2 World 工具轨
+    needle_model_key,
+    // §29.2 任务 A：注册+分类同事务
+    register_local_model, register_remote_model,
+    // G2-B 双轨（§27.3）：B1 纯工具轨 / B2 World 工具轨（register_open+WorldOutcome）
     register_tool_fn, register_world_tool,
     spawn_agent, tool_key, AgentSpec,
 };
 
 #[cfg(feature = "rig-ecs")]
 pub use security::{
-    install_security_guard, NeedleSecurityPolicy, SecurityGuard, security_guard,
+    install_security_guard, security_guard, ModelClass, NeedleSecurityPolicy,
+    SecurityGuard,
 };

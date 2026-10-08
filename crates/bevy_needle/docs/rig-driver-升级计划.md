@@ -1,6 +1,17 @@
 # bevy_needle PR-B 执行规格：Driver 契约与 rig 适配
 
-> 版本：**v27**（2026-10-08）· 面向 Claude Code 执行
+> 版本：**v28.1**（2026-10-08）· 面向 Claude Code 执行
+>
+> **🔴 执行权威层 = §29（唯一执行依据）。** §0.3 / §4（整章）/ §9.0 / Appendix A–D 已标
+> **HISTORICAL / NON-OPERATIVE**，仅作论证留档，**按其代码示例实现即为误执行**。
+> 本轮任务只有四件：**hardening → verification → migration → legacy deletion**（§0.0）。
+>
+> **📍 当前基线：`0b59cc24`（§27.5 八步已落地）。Architecture PASS / rig-ecs execution ownership PASS。**
+> **⛔ legacy 仍不得删除。** 删除门 = **migration verification（G1）**；
+> 但 **LocalModelOnly fail-closed / worker shutdown / B2 正向 E2E / 远程 CI 绿**
+> 必须在删除前一并完成（§28.7）—— 八门见 **§28.8**。
+> 🔴 两个 hardening：`LocalModelOnly` 是 **fail-open**（未登记 remote 可绕过，§28.2）；
+> worker 无 `shutdown()/join()`（§28.3）。**I18 / I24 已 v28 重写**（旧措辞描述已删除路径）。
 >
 > **🔴 开工前必读 §27.0：NORMATIVE / HISTORICAL 效力声明。**
 > Appendix A–D 及所有含 `LazyModel` / `rig-run` / `CompletionModel 主入口` / `bevy 0.19.0` /
@@ -72,6 +83,50 @@
 
 ## §0 PR-B Mission
 
+> **🔴 本节 v28.1 重写。** 原文仍写「PR-B 只补 Driver 抽象 / DriverCoordinator / RigDriver 适配」，
+> 会诱导实现者重新实现已被 I13（v27 重写）与 §26 否掉的 Driver runtime。
+> **当前基线 = `0b59cc24`，架构已定稿，本轮只做收尾 + 验证 + 删除。**
+
+### 0.0 本轮任务（唯一有效）
+
+```text
+PR-B 主体已完成（见 §24 / §28.1）。本轮只做四件事：
+
+  1. hardening        LocalModelOnly fail-closed；worker shutdown/join
+  2. verification     G2-B 正向 B2 E2E；confidence / cancellation E2E
+  3. migration        0.2.0 → 0.3.0 迁移说明 + API 替代关系表
+  4. legacy deletion  §28.8 八门全绿后才允许，且必须单独提交
+```
+
+### 0.1 已定稿架构（禁止重新设计）
+
+```text
+Needle native
+  └─ Model<Wire, Transport>
+       └─ DynModel
+            └─ ModelAdapter
+                 └─ rig-ecs execution plane
+
+bevy_needle 仅保留：
+  · Needle native session / worker / codec
+  · NeedleSecurityPolicy / LocalModelOnly / capability ceiling
+  · 薄 model adapter 与注册胶水
+```
+
+### 0.2 本轮禁止清单
+
+```text
+❌ 继续扩张 DriverRegistry / RigDriver / RigModelInbox / rig_step_system
+❌ 新建第二套 Agent / Run / Tool runtime
+❌ 恢复 rig-run
+❌ 把 CompletionModel 作为 rig-ecs 主注册入口
+❌ 改变 EscalationPolicy 的业务语义
+❌ 把 LocalModelOnly 下沉成 rig-ecs 的普通 capability
+❌ 因删除 legacy 而顺手删除 RunStatus::Escalated（它是业务契约，不是 legacy 实现细节）
+```
+
+### 0.3 原始 Mission（历史留档，非执行依据）
+
 ```
 让 bevy_needle 在「置信度不足」时，能把同一次 Run 的推理责任 handoff 给另一个 Driver，
 而 crate 核心永远不知道 rig 是什么。
@@ -115,13 +170,14 @@ PR-B 只补三样：Driver 抽象、DriverCoordinator、RigDriver 适配。
 | **I15** | **PR-B 必须复用 0.2.0 已固化的契约面**，不得另起一套档位表示（§2.3 的两项 breaking 除外，那是修形状不是另起） |
 | **I16** | **Driver trait 不得暴露异步推进接口（无 `poll`）**。异步结果经 channel 回灌，ECS 只 drain。**Driver 不得持有 Future / waker / runtime** |
 | **I17** | **每个异步 job 必须携带 `(run, epoch)`**。epoch 不匹配的结果**丢弃**，不得修改 Run |
-| **I18** | **🔄 v27 重写：call_id 规范来源 + 严格往返**。`rig CallId` 与 ECS 侧 `ToolCall.call_id` 必须**同值**往返。provider 无 ID 时（Needle 信封即如此），**adapter 解码层可生成**，但必须：生成一次、run 级唯一（本实现取 model 实例级单调序），两侧同值；**禁止**在工具执行前临时重铸，**禁止**两侧出现不同的值 |
+| **I18** | **工具 call_id 严格往返**。缺失即 `DriverProtocolError::MissingToolCallId`，**禁止 mint 新 ID** |
 | **I19** | **`preresolved_result` 非空时不得进 ECS 执行**，直接回灌 |
 | **I20** | **工具结果必须按原始 call order 重排后回喂**，不得依赖 ECS 完成顺序 / Entity id / HashMap 顺序 |
 | **I21** | **Needle 与 Rig 是不同的并发域**。不得为复用 needle 串行队列把 Rig 全部串行化 |
 | **I22** | **能 `block_on()` 的类型只存在于 worker 侧**。优先类型系统隔离，其次 worker-private API，文档约束是最后防线 |
 | **I23** | **🔄 v27 重写（见 §22.3 / §26.5）**：主路径与升级路径必须是**分离的 policy path**。它们**可以共享同一个 rig-ecs 执行基底**（共享 runtime 不违反 I23）。违反 I23 的是：切换 `UsesModel` 时**绕过 capability ceiling / `LocalModelOnly` / 模型选择安全策略**，或让两条路径共用同一套**授权与语义**。同时仍禁止构造把 needle 同步单会话与 rig async agent 混为一体的「统一 Model 抽象」 |
-| **I24** | **`CompletionModel` 不得渗透进 `Driver` trait**。`Driver` 只认 `DriverId` / `run` / `epoch` / input / tool context / result；模型是什么属于 `RigDriver<M>` 的实现细节。注意：`CompletionModel` 是 RPITIT trait，**不可 `dyn`**，所以连"擦除后塞进 trait"都不可能 —— I24 由编译器强制 |
+| **I18** | **🔄 v28 重写（旧措辞描述已删除的 `bevy_needle::ToolCall` 路径）**：tool `call_id` 严格往返于 **Rig `CallId` ↔ rig-ecs tool/effect lifecycle**。provider 原生提供 ID 时**禁止改写**；provider 不提供时（如 Needle 原生无 ID），adapter 可生成，但必须满足：① **run/model 级单调递增唯一**（当前实现：`call_id(seq)` + `Arc<AtomicU64>`，已跨轮唯一）；② **两侧同值**，不得出现一侧有值另一侧为空。**禁止 per-reply index 式 ID**（跨轮会重复） |
+| **I24** | **🔄 v28 重写（旧措辞描述已删除的 `RigDriver<M>` 路径）**：**模型契约不得渗透进控制平面**。当前正确形态是 `Model<Needle3Wire, Needle3Transport> → DynModel → ModelAdapter → Serve`；`Needle3Model` 是 **Model 不是 Agent**，不得出现 `run()` / `execute_tool()` / `register_tool()` / `escalate()`。**不得退回 `impl CompletionModel` 作主入口** —— `DynModel` 无 `From<CompletionModel>`，`ModelAdapter::new` 收 `Into<DynModel<Op>>`，照做会断掉注册链（§23.1） |
 | **I25** | **Driver 必须声明 capability**（`Needle` / `Local` / `Remote`）。注册期校验 tier binding 的 capability 与 `EscalationTarget` 匹配；不匹配 → 该 tier 不可用 → 走 `Escalated`（没试）不是 `Failed`。**capability 只用于校验，绝不用于推导 tier**（I10） |
 | **I26** | **`RigDriverState` 内部状态只读**。`awaiting` / `tool_turn` 不得外部可变访问；模型回合**只能**经 `RigModelInbox` 注入，禁止从别处直接塞 `ModelTurn` |
 | **I27** | **回执纪律：worker 必须对每个请求给出交代**。completion 失败 → 标记失败；通道断开 → 传输错误；收到无主响应 → `DriverUnavailable`。**禁止静默丢弃** —— 静默会让 run 永久卡在等待态 |
@@ -284,6 +340,16 @@ Run ──► Escalating{tier} ──► DriverCoordinator ──► DriverRegis
 ---
 
 ## §4 Driver 契约（PR-B 的核心新增）
+
+> **🔴 整章 HISTORICAL / NON-OPERATIVE（v28.1）。**
+> 本节描述的 `DriverRegistry` / `RigDriver<M>` / `RigModelInbox<M>` / `rig_step_system<M>` /
+> `DriverAttempt` **均属 legacy runtime，已被 I13（v27 重写）与 §26 否掉，禁止继续扩张**。
+> 当前唯一执行依据是 **§0.1 定稿架构 + §23 + §26 + §29**。
+> 保留本节仅作论证留档；**按其代码示例实现即为误执行**。
+>
+> 例外：§4.4 的 `EscalationState` 字段设计（含 epoch / driver_id / deadline / reason）
+> 与 §4.7 的「tier→id 两层绑定」思想仍有参考价值，但**存储位置已归 rig-ecs**，
+> 不得据此在 bevy_needle 重建一套。
 
 ### 4.1 分层职责与 tier/rank 反例
 
@@ -654,6 +720,22 @@ CancelRun → 标记 Cancelled → epoch 失效 → 旧 work 可能跑完 → �
 
 ## §9 依赖与 feature 契约
 
+> **🔴 v28.1：下方代码块为历史草案，非执行依据。**
+> `rig-run` 已于 **2026-09-01 被上游解散、永不发布**；`rig-core 0.42` 已过时。
+> **当前唯一依赖依据（实测 `0b59cc24` Cargo.toml）**：
+>
+> ```toml
+> rust-version = "1.98"
+> bevy = bevy_ecs = bevy_app = bevy_tasks = "=0.19.1"
+> rig-core = { version = "=0.44.0", default-features = false }
+> rig-ecs  = { version = "=0.44.0", default-features = false }
+> ```
+>
+> **git pin 已解除**（registry 源），crates.io 发布阻塞随之消失。
+> **禁止把 `rig-run` 引回来。**
+
+### 9.0 历史草案（NON-OPERATIVE）
+
 ```toml
 [features]
 default  = ["dlopen"]
@@ -792,8 +874,7 @@ impl EscalationPolicy {
 ❌ 异步 job 不携带 (run, epoch)                        （违反 I17）
 ❌ epoch 不匹配的事件仍修改 Run                        （违反 I17，会复活已取消的 run）
 ❌ epoch 只写在文档里而不落进 EscalationState          （违反 I17，约束会被绕开）
-❌ 工具执行前临时 mint / 两侧 call_id 不同值             （违反 I18 v27；
-                                                          adapter 解码层一次性生成合法）
+❌ call_id 缺失时 mint 新 ID                           （违反 I18）
 ❌ preresolved_result 非空仍进 ECS 执行                （违反 I19）
 ❌ 工具结果按 ECS 完成顺序直接回喂                     （违反 I20，必须重排）
 ❌ 为复用 needle 串行队列把 Rig 全部串行化             （违反 I21）
@@ -2030,47 +2111,331 @@ G6 的验收同步升级：**从"结果分发不串"改为 payload 级断言** �
 
 ---
 
-## §27.7 执行日志（v27.5 ①–⑧，2026-10-08 实施记录）
+## §28 `0b59cc24` 审计结果与剩余工作（v28）
+
+> 我对审查结论做了独立复核，**A、B、规格残留三项全部证实**。本节取代 §27.5 之后的"下一步"。
+
+### 28.1 ✅ 已证实通过（审查判断正确）
+
+| 项 | 复核结论 |
+|---|---|
+| master = `0b59cc24` | 提交信息即「§27.5 八步执行」 |
+| AtomicWaker | `worker.rs` 实测 `use futures::task::AtomicWaker`；`WaitSlot { state, waker }`；`WaitFuture::poll` 走 `register(cx.waker())` 后 `try_take`；旧「每次 poll spawn 1ms 线程」已删 |
+| canonical call_id | `call_id(seq: &AtomicU64)` + `fetch_add(1)` + `format!("needle-call-{seq}")`，同一 `Arc<AtomicU64>` —— 跨轮唯一成立 |
+| confidence gate | 已进入 rig-ecs 执行边界（`Intercept::after` → `Verdict::Replace`），且为 **effect 计数**验收 |
+| G2-B 双轨 | `host.rs` 现在 `Handlers::register(ToolFn)` + `Handlers::register_world::<E>()`；旧的 `ToolCall { run: Entity::PLACEHOLDER, call_id: "" }` 与 `ToolHandlerFn` 桥接**已删除** |
+| legacy freeze | `src/rig/` 不再 import `crate::tool` / `crate::policy` / `crate::agent` / `crate::run` / `crate::session` |
+| cancellation | 取消生命周期已归 rig-ecs（`rig_ecs::cancel_run()` → `Failed(Cancelled)`，迟到结果不产生 `RunResult`） |
+
+**关键结论：之前担心的"rig-ecs 精简只是文档上的 ownership 宣言"已排除。** `src/rig/` 实际已是
+`Model/Wire/Transport + ModelAdapter + rig-ecs Handler/Agent/Effect` 新路径。
+
+### 28.2 🔴 A：`LocalModelOnly` 是 **fail-open**，不是 airtight
+
+实测 `security.rs`：
+
+```rust
+pub struct SecurityGuard {
+    pub policy: NeedleSecurityPolicy,
+    pub remote_handlers: HashSet<Entity>,   // 只有"登记过"的才受保护
+    pub blocked: u64,
+}
+```
+
+`security_guard()` 的判据是 `guard.forbids(*target)`，而 `forbids` 只在
+**`remote_handlers.contains(&target) && !remote_allowed`** 时为真。
+
+源码注释自己承认：
+
+> 宿主绕过本 crate 的注册助手直接 `Handlers::register` 是宿主自己的选择；
+> 本护栏以「已在本 crate 注册过的分类」为准
+
+→ **未登记的 remote handler 不在集合内 → 不 forbidden → 照常执行。**
+
+现有 E2E 之所以绿，是因为它自己调了 `insert_remote(remote_entity)`。
+它证明的是「**登记过的** remote 能被拦」，不是「**任何** remote 都无法绕过」。
+
+**当前验收条目 PASS；产品级不变量未 PASS。**
+
+**修法（建议随 migration verification 一起做，不单独开大工程）**：
+
+```
+把「分类」与「注册」合并为一个事务，改 fail-open → fail-closed：
+
+    register_model(..., ModelClass::Local)
+    register_model(..., ModelClass::Remote)
+
+由 bevy_needle 提供的注册助手统一写入 SecurityGuard；
+未分类 handler 在 LocalModelOnly 下默认视为 remote（拒绝），
+而不是默认放行。
+```
+
+### 28.3 🔴 B：worker 没有 shutdown / join 语义
+
+实测 `worker.rs`：
+
+```rust
+pub struct Needle3Worker {
+    jobs: Sender<Job>,
+    _worker: Mutex<Option<thread::JoinHandle<()>>>,
+}
+```
+
+`new()` 里 `thread::Builder::new().spawn(move || worker_loop(...))`；
+`worker_loop` 是 `while let Ok(job) = jobs.recv()`。
+**没有 `shutdown()` / `join()`，也没有 `Drop` impl。**
+
+当前语义是：Drop → Sender 销毁 → 线程最终从 `recv()` 退出 → JoinHandle 被 drop。
+与 §7 要求的 `stop accepting → drain/discard → join worker → release runtime` 不符，
+**宿主无法确认 native worker 真正结束**。
+
+定级：**P1 hardening**（不阻塞 migration verification，但别留到删完 legacy 才发现）。
+
+### 28.4 🟡 规格残留：I18 / I24 已重写（v28）
+
+审查指出代码已比规格干净。我确认属实并已改：
+
+- **I18** 旧措辞仍在描述已删除的 `bevy_needle::ToolCall.call_id` 路径 → 改为
+  **Rig `CallId` ↔ rig-ecs tool/effect lifecycle**
+- **I24** 仍在描述 `RigDriver<M>` / `CompletionModel` 语义 → 改为
+  `Model<Wire,Transport> → DynModel → ModelAdapter → Serve`，并补上
+  **"不得退回 `impl CompletionModel` 作主入口"**（`DynModel` 无 `From<CompletionModel>`，会断链）
+
+### 28.5 🟡 G6 结论需收窄措辞
+
+当前 G6 证明的是 **payload 不串**（`MockBackend.capture(input)` + `recorded == ["first","second"]`），
+但**依赖同 handler 的 serving 顺序**。
+
+准确表述应为：
+
+> **单个 Needle handler 的 single-active-turn 语义，由 Rig 的 `ServingPolicy::serial_per_handler`
+> 与自身 worker 串行队列共同承担。**
+
+**不是**「任意多 Needle model / 任意多 worker 都能自然并发」。
+`worker.rs` 注释仍说明多 worker 共享同一进程 Needle engine 会发生 bind 覆盖 —— 约束真实存在。
+
+### 28.6 ⚠️ CI 数字不可独立复现
+
+审查称 GitHub Actions 未返回该 commit 的 PR-triggered run。
+`.github/workflows/ci.yml` 确实存在（`push main` / `pull_request`，跑
+`cargo test` / `cargo fmt --check` / `cargo clippy -D warnings`），
+但**不能据此宣称 28/49/69/80 已由远程 CI 证明**。
+
+→ 发版或删 legacy 前，**必须拿到一次真实的远程 CI 绿**，不接受本地执行记录替代。
+
+### 28.7 剩余路线（只有 5 步，不再扩大范围）
+
+```
+1. migration verification          ← 唯一真正阻塞 legacy 删除的事项
+2. LocalModelOnly fail-closed       ← 顺手做，随 1 一起
+3. worker shutdown/join hardening   ← P1，随 1 一起
+4. §26.7 五门复验 + 拿到真实远程 CI 绿
+5. 删除 legacy
+```
+
+**明确不再做**：改 `DriverRegistry`、重写 Rig adapter、重写 tool runtime、
+给 legacy 加任何功能。审查这条边界划得对。
+
+### 28.7 🟡 措辞澄清：「唯一 blocker」的准确含义
+
+顶部写「唯一阻塞项是 migration verification」，但 §28.2 同时说 `LocalModelOnly` 产品级未 PASS
+—— 两者并列有歧义。精确拆分为：
 
 ```text
-① AtomicWaker       ✅ DONE   worker.rs：WaitSlot 去 Condvar → futures::task::AtomicWaker；
-                               WaitFuture poll 改标准两步式（取→注册→复查），
-                               deliver 落回后原子 wake；删除"每 poll spawn 睡眠
-                               线程"的挂死隐患。测试 ×3：无 re-poll 事件驱动唤醒 /
-                               无假唤醒 / 帧先到路径。
-② 规格先修          ✅ DONE   I18 v27 重写落 §1 表（call_id 规范来源 + 同值往返）
-                               + §11 清单同步；I27.6 I33 落地：G6 升级为 payload 级
-                               断言（引擎实测每份输入，断言零跨 run 混入）。
-③ canonical call_id ✅ DONE   codec::call_id 单点 mint（needle-call-<seq>，model
-                               实例级单调序）；wire 解码器与 envelope 助手共用同一
-                               序列；旧 per-reply "needle-local-{index}"（跨轮碰撞）
-                               删除。测试 ×1：三轮回复 id 互不碰撞。
-④ confidence e2e    ✅ DONE   gate.rs 脱离 legacy EscalationPolicy（阈值注册期
-                               给定，§26.2 落地）+ rig-ecs e2e ×3 按 §27.4 effect
-                               计数验收：low → ToolEffect==0 且 WorldEffect==0 且
-                               回调零执行且 Failed 报文含门限；high → ToolEffect==1
-                               exactly；respond 低置信度照常 settle。
-⑤ G2-B 双轨         ✅ DONE   host.rs 重写：B1 register_tool_fn（宿主直注 ToolFn，
-                               无 legacy ToolHandlerFn 桥接——§27.3 点名的
-                               PLACEHOLDER+空 call_id 违规已删）；B2
-                               register_world_tool::<E>（Asked<E>/Answer<E> 通道）。
-⑥ 三个 Rig E2E      ✅ DONE   confidence（④ 已含）；LocalModelOnly：
-                               security.rs（NeedleSecurityPolicy/SecurityGuard/
-                               security_guard 护栏系统挂在 RigSchedule 的
-                               Select 后 Assemble 前）+ e2e（已注册 remote + 用
-                               UsesModel 显式选中 → Failed(Cancelled) 安全原因、
-                               remote 零 served、护栏不误伤本地 run）；
-                               cancellation：cancel_run 在途取消 → 放行迟到完成 →
-                               Failed(Cancelled) 保持、零答案提交。
-⑦ legacy 冻结       ✅ DONE   lib.rs legacy 区冻结纪律落档（不加功能/不改语义/
-                               新代码不依赖）；src/rig/ 零 legacy 依赖审计通过
-                               （crate::tool / crate::policy / crate::agent /
-                               crate::run / crate::session 均无引用）。
-⑧ legacy 删除       ⛔ 门未全绿   五门状态：G2-B ✅ / confidence E2E ✅ /
-                               LocalModelOnly E2E ✅ / Cancellation E2E ✅ /
-                               migration verification ❌（RunStatus::Escalating/
-                               Escalated 的迁移说明未发布）。最后一门不计入
-                               → legacy 继续存在（冻结，不扩展）。
+删除门（规格意义上的 gate，必须 PASS）
+    G1 migration verification
+
+删除前必须一并完成的 hardening（不构成 gate 替代，但缺一不可）
+    LocalModelOnly fail-closed
+    worker shutdown / join
+    B2 正向 E2E
+    真实远程 CI 绿
+```
+
+**理由**：若只满足 G1 就删 legacy，新架构会成为唯一 execution path，
+而 `LocalModelOnly` 仍可被未分类 remote handler 绕过 —— 这不能作为最终态。
+
+### 28.8 删除前验收八门（取代 §26.7 五项）
+
+```text
+G1  migration verification                 PASS
+G2  G2-B1 Pure Tool                        PASS
+G3  G2-B2 World Tool（正向 E2E）           PASS
+G4  confidence E2E                         PASS
+G5  LocalModelOnly fail-closed E2E         PASS
+G6  cancellation / stale epoch             PASS
+G7  worker shutdown / join                 PASS
+G8  真实远程 CI green                      PASS
+```
+
+**G3 与 G5 从「附加 hardening」升级为删除前硬门。**
+任一失败 → 不删除 legacy、不引入 workaround runtime、不改已冻结架构，**只修当前失败项**。
+
+### 28.9 提交拆分（禁止合成一个大 commit）
+
+```text
+Commit A   hardening + tests
+             · LocalModelOnly fail-closed
+             · worker shutdown / join
+             · B2 正向 E2E
+Commit B   migration verification + docs/changelog + 全量本地验证
+Commit C   legacy deletion（删除后只做验证，不再顺手重构）
+```
+
+**Commit C 单独提交**，出问题可直接回退删除动作而不牵连安全修复。
+
+---
+
+## §29 执行权威层（v28.1 施工单 —— 可直接交 Claude Code）
+
+> 本节是**唯一执行依据**。§4 / §9.0 历史草案 / Appendix A–D 均不得作为实现依据。
+
+### 29.1 执行权威
+
+本次只处理 `0b59cc24` 之后的**收尾、验证、legacy 删除**。架构已定稿，禁止重新设计。
+
+```text
+Needle native
+  └─ Model<Wire, Transport>
+       └─ DynModel
+            └─ ModelAdapter
+                 └─ rig-ecs execution plane
+
+bevy_needle 仅保留：
+  · Needle native session / worker / codec
+  · NeedleSecurityPolicy / LocalModelOnly / capability ceiling
+  · 薄 model adapter 与注册胶水
+```
+
+**禁止**：扩张 `DriverRegistry` / `RigDriver` / `RigModelInbox` / `rig_step_system`；
+新建第二套 Agent/Run/Tool runtime；恢复 `rig-run`；把 `CompletionModel` 作为 rig-ecs 主注册入口；
+改变 `EscalationPolicy` 业务语义；把 `LocalModelOnly` 下沉为 rig-ecs 普通 capability。
+
+历史章节、旧代码示例、`rig-run`、`CompletionModel` 主入口、`rig-core 0.42`、
+旧 Driver runtime **均非本次执行依据**。
+
+### 29.2 任务 A —— `LocalModelOnly` 改为 fail-closed
+
+把 remote/local 分类与 model/handler 注册**绑定为同一事务**：
+
+```text
+LocalModelOnly:
+    classified Local   → allow
+    classified Remote  → deny
+    unclassified       → deny          ← 关键：当前是 fail-open
+```
+
+**禁止**依赖调用方另行 `insert_remote()` 才获得保护。
+建议 API：`register_local_model(...)` / `register_remote_model(...)`，
+取代「先 `register()`、以后再 `insert_remote()`」的两阶段语义。
+
+新增 E2E（现有测试无法覆盖，因为它自己调了 `insert_remote`）：
+
+```text
+remote handler
+  + 未显式登记 remote classification
+  + LocalModelOnly
+  ⇒ dispatch denied
+```
+
+保留已登记 remote 的 deny 测试作为回归。
+
+### 29.3 任务 B —— worker shutdown / join
+
+实现明确的生命周期结束语义：
+
+```text
+stop accepting → drain / discard → join worker → release resources
+```
+
+**禁止**只依赖 `drop(Sender)` + 丢弃 `JoinHandle`。
+新增测试：shutdown 幂等、worker 最终 join、shutdown 后不接新 job、
+关闭后的迟到结果不复活 run。
+
+不做复杂 runtime manager，只回答「宿主何时能确信线程真的结束」。
+
+### 29.4 任务 C —— G2-B 双轨补齐正向验证
+
+```text
+B1：Rig ToolCall → ToolFn → pure result
+B2：Rig ToolCall → rig-ecs World handler → Asked<E>
+      → Bevy system → Answer<E> → Rig
+```
+
+新增**正向 B2 E2E**，证明：`Asked<E>` 真正产生 → Bevy system 真正修改 World →
+`Answer<E>` 真正回到 Rig → 正确 call_id / tool result 被保留。
+
+保留 deny 分支（low confidence → `ToolEffect == 0` 且 `WorldEffect == 0`）。
+**不得**再增加 callback → legacy `ToolHandlerFn` → World 的桥。
+
+### 29.5 任务 D —— confidence E2E（effect 级）
+
+```text
+low confidence   → ToolEffect == 0，WorldEffect == 0
+high confidence  → ToolEffect == 1（exactly）
+final response   → 必须正常 settle
+```
+
+**不得新增第二个独立 confidence gate。**
+
+### 29.6 任务 E —— cancellation / stale epoch
+
+保持：cancel → run cancelled → epoch invalidated → stale result discarded → no resurrection。
+覆盖：in-flight cancellation、stale epoch event、取消后迟到的 worker result。
+
+### 29.7 任务 F —— migration verification（机械化产出三件）
+
+```text
+1. 0.2.0 → 0.3.0 migration note
+2. RunStatus::Escalating / Escalated 的迁移说明
+3. 删除 legacy 后的 API 替代关系表
+```
+
+| 旧概念 | 新归属 |
+|---|---|
+| `Escalating { tier }` | 由新的 execution / control-plane 流程承载 |
+| `Escalated` | **保留** ——「不执行 / 受策略阻止」的正常终态，**不得顺手删除** |
+| legacy Agent/Run runtime | 删除 |
+| legacy Tool runtime | 删除 |
+| `NeedleSecurityPolicy` | 保留 |
+| Needle native session / worker | 保留 |
+| Rig model adapter | 保留 |
+| rig-ecs execution | 保留 |
+
+### 29.8 任务 G —— 完整验证
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test -p bevy_needle
+cargo check
+cargo check --no-default-features
+cargo check --features escalate
+cargo check --features rig
+cargo tree --no-default-features        # 断言：无 rig / tokio / reqwest
+```
+
+### 29.9 任务 H —— 远程 CI
+
+legacy 删除前必须取得**一次真实 GitHub Actions green**。
+`.github/workflows/ci.yml` 已存在（`push main` / `pull_request`），
+**本地测试数字不能替代**（§28.6）。
+
+### 29.10 执行顺序（取代 §27.5 / §28.7）
+
+```text
+A  LocalModelOnly fail-closed + 测试
+B  worker shutdown / join + 测试
+C  B2 正向 E2E
+       ↓ Commit A
+D  migration verification + changelog
+E  全量本地验证（29.8）
+       ↓ Commit B
+F  真实远程 CI green
+G  §28.8 八门复验 → 全绿
+       ↓ Commit C
+H  legacy deletion（单独提交，删除后只验证不再重构）
+```
 
 ---
 ---

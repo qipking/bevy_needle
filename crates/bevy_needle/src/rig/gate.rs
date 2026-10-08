@@ -31,6 +31,7 @@ pub const GATE_LAYER: &str = "needle-confidence";
 ///
 /// `after`：`Outcome::Completion` 且 `raw.confidence` 存在且低于门限
 /// → `Verdict::Replace(Err(Denied))`；否则 `Keep`。
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConfidenceGate {
     threshold: f64,
 }

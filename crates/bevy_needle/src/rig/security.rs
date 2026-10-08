@@ -1,5 +1,5 @@
 //! NeedleSecurityPolicy：bevy_needle 保留的**薄安全层**（升级计划 §26.2/§26.6；
-//! `rig-ecs` feature）。
+//! §29.2 任务 A：fail-closed；`rig-ecs` feature）。
 //!
 //! 职责只有一件事（§26.2）：回答「这个模型能不能被这个 Run 使用」——
 //! `LocalModelOnly` / capability ceiling。**不回答** confidence、重试、
@@ -9,25 +9,38 @@
 //! （completion/max_documents/ndims/declared）全部与 local/remote、网络、
 //! 隐私无关——今天 Rig 协议层没有承载 local-only 的载体，本层必须存在。
 //!
-//! 执行机制（rig-ecs 原生，非第二个 runtime）：
+//! ## fail-closed 语义（§29.2 任务 A）
 //!
-//! 1. [`SecurityGuard`] 资源登记「按 Remote 分类登记的 handler 实体」；
-//! 2. [`security_guard`] 系统挂在 RigSchedule（Select 之后、Assemble 之前），
-//!    对选中了被禁止 handler 的 run 写 rig-ecs 的标准停止钩子
-//!    [`rig_ecs::agent::Cancelled`]——上游 `run_cancelled` observer 落
-//!    `Failed(Cancelled)` 并清理在途 effect。**Helper 侧有旁路**：宿主
-//!    绕过本 crate 的注册助手直接 `Handlers::register` 是宿主自己的选择；
-//!    本护栏以「已在本 crate 注册过的分类」为准（E2E 语义见
-//!    §26.7 LocalModelOnly 行）。
+//! 分类与注册**绑定为同一事务**（[`crate::rig::host::register_local_model`] /
+//! [`crate::rig::host::register_remote_model`]，取代旧
+//! 「先 `register()`、以后再 `insert_remote()`」的两阶段语义）。护栏矩阵：
+//!
+//! ```text
+//! LocalModelOnly:
+//!     classified Local   → allow
+//!     classified Remote  → deny
+//!     unclassified       → deny      ← 关键：fail-closed（v28 审计 A 修正）
+//!
+//! CLOUD（显式允许云端）：一律 allow（fail-closed 是 LocalModelOnly 的红线语义）
+//! ```
+//!
+//! 也就是说：**未分类 handler 在 LocalModelOnly 下默认视为 remote（拒绝）**
+//! ——不存在靠调用方另行登记才获得的保护缺口；宿主绕过本 crate 助手直接
+//! `Handlers::register` 的模型在 LocalModelOnly 下不可被 Run 选中。
+//!
+//! 执行机制（rig-ecs 原生，非第二个 runtime）：[`security_guard`] 系统挂在
+//! RigSchedule（Select 之后、Assemble 之前），对命中禁止判据的 run 写
+//! rig-ecs 标准停止钩子 [`rig_ecs::agent::Cancelled`]——上游 `run_cancelled`
+//! observer 落 `Failed(Cancelled)` 并清理在途 effect。
 //!
 //! 与 legacy 的关系（⑦ 冻结纪律）：legacy 的 `OnlineFallback` /
 //! `EscalationPolicy` 不被本模块依赖。
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use bevy_ecs::prelude::*;
 
-/// 允许的模型类别（安全护栏语义的二值分类；§26.2）。
+/// 模型类别（安全护栏语义的二值分类；§26.2）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelClass {
     /// 本地模型（不联网）。
@@ -44,7 +57,7 @@ pub struct NeedleSecurityPolicy {
 }
 
 impl NeedleSecurityPolicy {
-    /// `LocalModelOnly`：远端永不选中。
+    /// `LocalModelOnly`：远端永不选中；**未分类的 handler 一律视为 remote**。
     pub const LOCAL_ONLY: Self = Self {
         remote_allowed: false,
     };
@@ -67,7 +80,7 @@ impl Default for NeedleSecurityPolicy {
     }
 }
 
-/// 拒绝原因（注册边界显式拒绝时的错误载荷）。
+/// 拒绝原因（显式拒绝时的错误载荷）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("security: model class {class:?} is not allowed (LocalModelOnly)")]
 pub struct SecurityRefusal {
@@ -75,39 +88,51 @@ pub struct SecurityRefusal {
     pub class: ModelClass,
 }
 
-/// 安全护栏的运行时登记表（Resource）。
+/// 安全护栏的运行时分类表（Resource；§29.2 任务 A）。
 ///
-/// `remote_handlers` 是**经本 crate 助手注册且分类为 Remote** 的 handler
-/// 实体集；[`security_guard`] 只拦这个集合（上游没有 local/remote 概念，
-/// §26.3）。宿主 `add_resource` 默认 LocalModelOnly。
+/// `classifications` 是**经本 crate 注册助手完成注册+分类同事务**的 handler
+/// 实体表；[`security_guard`] 按上文的 fail-closed 矩阵判据拦截。宿主
+/// `add_resource` 默认 LocalModelOnly。
 #[derive(Resource, Debug, Default)]
 pub struct SecurityGuard {
-    /// 安全策略（LocalModelOnly 默认）。
+    /// 安全策略（LocalModelOnly 默认 = fail-closed）。
     pub policy: NeedleSecurityPolicy,
-    /// 分类为 Remote 的 handler 实体。
-    pub remote_handlers: HashSet<bevy_ecs::entity::Entity>,
+    /// 注册+分类同事务产出的 handler 分类表。
+    pub classifications: HashMap<bevy_ecs::entity::Entity, ModelClass>,
     /// 遥测：护栏拦下的 run 数（诊断面）。
     pub blocked: u64,
 }
 
 impl SecurityGuard {
-    /// 登记 Remote handler（宿主注册远端模型后调用；E2E 语义：已注册
-    /// remote + LocalModelOnly → remote 永不选中，§26.7）。
-    pub fn insert_remote(&mut self, handler: bevy_ecs::entity::Entity) {
-        self.remote_handlers.insert(handler);
+    /// 注册+分类同事务：把 handler 实体登记为指定类别。
+    pub fn classify(
+        &mut self,
+        handler: bevy_ecs::entity::Entity,
+        class: ModelClass,
+    ) {
+        self.classifications.insert(handler, class);
     }
 
-    /// 该 handler 是否被当前策略禁止。
+    /// 该 handler 是否被当前策略禁止（fail-closed 矩阵，§29.2）。
     pub fn forbids(&self, handler: bevy_ecs::entity::Entity) -> bool {
-        self.remote_handlers.contains(&handler) && !self.policy.remote_allowed
+        match self.policy {
+            // LocalModelOnly：只有显式分类为 Local 的才放行。
+            NeedleSecurityPolicy {
+                remote_allowed: false,
+            } => self.classifications.get(&handler) != Some(&ModelClass::Local),
+            // CLOUD：显式允许云端档，一律放行。
+            NeedleSecurityPolicy {
+                remote_allowed: true,
+            } => false,
+        }
     }
 }
 
 /// 模型选择护栏系统（RigSchedule；Select 之后、Assemble 之前）。
 ///
-/// 读 run 的 [`rig_ecs::agent::UsesModel`]，命中被禁止的 handler 即写
-/// rig-ecs 标准停止钩子 [`rig_ecs::agent::Cancelled`]（上游 observer 负责
-/// 落终态与清理——bevy_needle 不另造 Run 状态机，I13）。
+/// 读 run 的 [`rig_ecs::agent::UsesModel`]，命中禁止判据（§29.2 fail-closed
+/// 矩阵）即写 rig-ecs 标准停止钩子 [`rig_ecs::agent::Cancelled`]（上游
+/// observer 落终态与清理——bevy_needle 不另造 Run 状态机，I13）。
 pub fn security_guard(
     mut guard: ResMut<SecurityGuard>,
     selected: Query<(Entity, &rig_ecs::agent::UsesModel)>,
@@ -126,7 +151,8 @@ pub fn security_guard(
         if live.contains(run) && guard.forbids(*target) {
             guard.blocked += 1;
             commands.entity(run).insert(rig_ecs::agent::Cancelled(
-                "security: LocalModelOnly forbids the selected remote model".to_owned(),
+                "security: LocalModelOnly forbids this model (unclassified counts as remote)"
+                    .to_owned(),
             ));
         }
     }
@@ -161,17 +187,41 @@ mod tests {
         assert!(cloud.allows(ModelClass::Remote));
     }
 
+    /// §29.2 fail-closed 矩阵的单元层验收（三类全覆盖）。
     #[test]
-    fn guard_forbids_only_registered_remote_handlers() {
+    fn fail_closed_matrix_local_only() {
         let mut guard = SecurityGuard::default();
-        let remote = bevy_ecs::entity::Entity::PLACEHOLDER;
-        // 登记的是"集合成员资格"：登记过的实体命中；未登记的不命中。
+        assert_eq!(guard.policy, NeedleSecurityPolicy::LOCAL_ONLY);
+
         let mut world = bevy_ecs::world::World::new();
-        let unregistered = world.spawn_empty().id();
-        guard.insert_remote(remote);
-        assert!(guard.forbids(remote), "LocalModelOnly 下已登记 remote 必须被禁");
-        assert!(!guard.forbids(unregistered), "未登记的实体不受影响");
-        guard.policy = NeedleSecurityPolicy::CLOUD;
-        assert!(!guard.forbids(remote), "Cloud 策略放行 remote");
+        let local = world.spawn_empty().id();
+        let remote = world.spawn_empty().id();
+        let unclassified = world.spawn_empty().id();
+
+        guard.classify(local, ModelClass::Local);
+        guard.classify(remote, ModelClass::Remote);
+
+        // classified Local → allow
+        assert!(!guard.forbids(local), "classified Local 必须 allow");
+        // classified Remote → deny
+        assert!(guard.forbids(remote), "classified Remote 必须 deny");
+        // unclassified → deny ← 关键：fail-closed（v28 审计 A 修正）
+        assert!(guard.forbids(unclassified), "unclassified 必须 deny");
+    }
+
+    /// CLOUD 策略下一律放行（含 unclassified——fail-closed 是
+    /// LocalModelOnly 的红线语义，Cloud 是显式允许云端的另一种声明）。
+    #[test]
+    fn cloud_allows_all_classes() {
+        let mut guard = SecurityGuard {
+            policy: NeedleSecurityPolicy::CLOUD,
+            ..SecurityGuard::default()
+        };
+        let mut world = bevy_ecs::world::World::new();
+        let remote = world.spawn_empty().id();
+        let unclassified = world.spawn_empty().id();
+        guard.classify(remote, ModelClass::Remote);
+        assert!(!guard.forbids(remote), "Cloud 放行 Remote");
+        assert!(!guard.forbids(unclassified), "Cloud 放行 unclassified");
     }
 }

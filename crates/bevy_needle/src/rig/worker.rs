@@ -189,18 +189,46 @@ impl Drop for WaitFuture {
 ///
 /// `backend` 是启动期构造完成的引擎句柄（`DlopenBackend` 或 `MockBackend`）。
 /// 注意（F1）：Needle 引擎是进程级单会话单例——两个 worker 共享同一进程内
-/// 引擎时，bind 互相覆盖。多会话需求（升级计划 §13）下宿主应给每个 Agent
-/// 独立 worker 进程（上游 issue #94 的官方策略）；本 crate 当前提供的
+/// 引擎时，bind 互相覆盖。多会话需求（升级计划 §29.3/§13）下宿主应给每个
+/// Agent 独立 worker 进程（上游 issue #94 的官方策略）；本 crate 当前提供的
 /// 进程内形态按 §13 第一版约定：**一个 Rig Agent = 一个 Needle3Model = 一个
 /// worker 实例，且宿主保证不并发驱动多个实例**（Rig 调度层串行保证）。
+///
+/// ## 生命周期（§29.3 任务 B：明确的 shutdown / join）
+///
+/// `stop accepting → drain / discard → join worker`：
+/// - [`Needle3Worker::shutdown`] 幂等——第一次调用取走发送端（**停止收新
+///   作业**），随后 [`Needle3Worker::join`] 等待线程收尽队列并退出；
+/// - 队列里已排队的作业**照常执行**（drain）；其后退出的作业结果：
+///   等待方在 → 交付，等待方已 drop（`Abandoned`）→ 丢弃（I27：无静默
+///   失联，回执要么交付要么显式丢弃）；
+/// - shutdown 之后 [`Needle3Worker::submit`] 立即以
+///   `WorkerError::Transport("worker shut down")` 回执（不悬挂、不排队）。
+///
+/// **Drop 只停收不 join**（避免宿主丢弃共享句柄时阻塞任意线程）——"何时
+/// 确信线程真的结束"由显式 `shutdown`/`join` 回答（§29.3 禁止只依赖
+/// `drop(Sender)` + 丢弃 JoinHandle）。
 pub struct Needle3Worker {
-    jobs: Sender<Job>,
-    _worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 发送端（shutdown 时取走 = 停止收新作业）。
+    jobs: Mutex<Option<Sender<Job>>>,
+    /// 线程句柄（shutdown 时取走并 join）。
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 struct Job {
     payload: NeedlePayload,
     slot: Arc<WaitSlot>,
+}
+
+impl Drop for Needle3Worker {
+    /// 只停收（取走发送端），**不 join**——共享句柄的最后一个引用可能
+    /// 落在任何线程；join 的阻塞语义由显式 [`Self::shutdown`] 承担
+    /// （§29.3："宿主何时能确信线程真的结束"）。
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.jobs.lock() {
+            guard.take();
+        }
+    }
 }
 
 impl Needle3Worker {
@@ -212,27 +240,100 @@ impl Needle3Worker {
             .spawn(move || worker_loop(backend, jobs_rx))
             .ok();
         Self {
-            jobs,
-            _worker: Mutex::new(worker),
+            jobs: Mutex::new(Some(jobs)),
+            worker: Mutex::new(worker),
         }
     }
 
-    /// 提交一次解码（立即返回；I1）。worker 死亡也回执（I27）。
+    /// 提交一次解码（立即返回；I1）。
+    ///
+    /// shutdown 之后：**立即**回执 `Transport("worker shut down")`（不排队
+    /// 不悬挂，I27 / §29.3「不接新作业」）。
     pub fn submit(&self, payload: NeedlePayload) -> Submitted {
         let slot = Arc::new(WaitSlot::new());
-        let job = Job {
-            payload,
-            slot: Arc::clone(&slot),
-        };
-        if self.jobs.send(job).is_err() {
-            slot.deliver(Err(WorkerError::Transport(
-                "needle worker channel closed".into(),
-            )));
+        let guard = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match guard.as_ref() {
+            // 正常路径：入队成功即返回等待句柄。
+            Some(jobs) if jobs.send(Job { payload, slot: Arc::clone(&slot) }).is_ok() => {}
+            // 已 shutdown 或通道断开：立即回执（I27，不排队不悬挂）。
+            _ => {
+                drop(guard);
+                slot.deliver(Err(WorkerError::Transport(
+                    "needle worker shut down".into(),
+                )));
+            }
         }
         Submitted {
             ticket: Ticket(0),
             wait: WaitFuture { slot },
         }
+    }
+
+    /// 生命周期收尾（§29.3 任务 B；幂等）：
+    /// **stop accepting → drain / discard → join worker**。
+    ///
+    /// 第一次调用：取走发送端（之后 [`Self::submit`] 立即以 shutdown 错误
+    /// 回执），join worker——队列剩余作业照常执行（drain），其后退出。
+    /// 阻塞语义：join 等待**在途解码天然完成**（`needle_complete` 不可中止，
+    /// candle 事实，规格 §7）——宿主需在调用处容忍该时长。
+    pub fn shutdown(&self) -> Result<(), WorkerError> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.join()
+    }
+
+    /// join worker 线程（幂等；shutdown 内部调用；也可单独使用——
+    /// 取走发送端后再 join 保证可退出）。
+    ///
+    /// 注意：单独 join 而发送端仍在的场景由返回值表达——发送端尚未取走
+    /// 时返回 `Err(WorkerError::Transport)` 且**不阻塞**（要求宿主先
+    /// shutdown 再 join 即可确信线程结束）。
+    pub fn join(&self) -> Result<(), WorkerError> {
+        let handle = {
+            let mut guard = self
+                .worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.take()
+        };
+        let Some(handle) = handle else {
+            return Ok(()); // 已 join：幂等。
+        };
+        let jobs_live = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        if jobs_live {
+            // 发送端还活着的场景不 join（否则永远等不到队列耗尽）；放回
+            // 句柄，保持幂等语义 TObject。
+            *self
+                .worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
+            return Err(WorkerError::Transport(
+                "needle worker join before shutdown (sender still live)".into(),
+            ));
+        }
+        match handle.join() {
+            Ok(()) => Ok(()),
+            Err(_) => Err(WorkerError::Transport(
+                "needle worker thread panicked before join".into(),
+            )),
+        }
+    }
+
+    /// 是否已 shutdown（停止收新作业）。
+    pub fn is_shut_down(&self) -> bool {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none()
     }
 }
 
@@ -486,5 +587,142 @@ mod tests {
         }
         let outcome = outcome.expect("frame should have been observed");
         assert_eq!(outcome.reasoning.as_deref(), Some("already-done"));
+    }
+
+    /// ── §29.3 任务 B 验收组 ──
+
+    /// shutdown 幂等 + 停止收新作业 + join 确认。
+    #[test]
+    fn shutdown_is_idempotent_and_stops_accepting() {
+        let worker = Needle3Worker::new(Arc::new(EchoBackend));
+        // shutdown 前作业照常。
+        let pre = worker.submit(NeedlePayload {
+            input: "pre".into(),
+            max_new_tokens: 8,
+            session: None,
+        });
+        futures_now(pre.wait).expect("pre-shutdown job completes");
+
+        let first = worker.shutdown();
+        first.expect("first shutdown joins cleanly");
+        assert!(worker.is_shut_down(), "shutdown 后不再收新作业");
+
+        // 幂等：再次 shutdown 无副作用。
+        worker.shutdown().expect("second shutdown is a no-op");
+
+        // shutdown 后 submit：立即获得 shutdown 回执（不排队不悬挂）。
+        let post = worker.submit(NeedlePayload {
+            input: "post".into(),
+            max_new_tokens: 8,
+            session: None,
+        });
+        let receipt = futures_now(post.wait);
+        assert!(
+            matches!(&receipt, Err(WorkerError::Transport(msg)) if msg.contains("shut down")),
+            "shutdown 后 submit 必须 Transport 错误回执：{receipt:?}"
+        );
+    }
+
+    /// drain 语义：shutdown 前已排队的作业**照常执行并交付**（不是丢队列）。
+    #[test]
+    fn shutdown_drains_queued_jobs() {
+        let worker = Needle3Worker::new(Arc::new(EchoBackend));
+        let jobs: Vec<Submitted> = (0..3)
+            .map(|n| {
+                worker.submit(NeedlePayload {
+                    input: format!("job-{n}"),
+                    max_new_tokens: 8,
+                    session: None,
+                })
+            })
+            .collect();
+
+        worker.shutdown().expect("shutdown with queued jobs drains");
+
+        // 三个等待 future 全部交付（drain——结果没有被丢弃）。
+        for (n, submitted) in jobs.into_iter().enumerate() {
+            let response = futures_now(submitted.wait).expect("queued job delivered");
+            assert_eq!(
+                response.reasoning.as_deref(),
+                Some(format!("job-{n}").as_str()),
+                "queued job {n} must be drained, not discarded"
+            );
+        }
+        assert!(worker.is_shut_down());
+    }
+
+    /// join-before-shutdown：发送端仍活时不 join（返回显式错误，不阻塞）。
+    #[test]
+    fn join_before_shutdown_refuses_without_blocking() {
+        let worker = Needle3Worker::new(Arc::new(EchoBackend));
+        let result = worker.join();
+        assert!(
+            matches!(&result, Err(WorkerError::Transport(msg)) if msg.contains("before shutdown")),
+            "发送端仍活时 join 必须显式拒绝：{result:?}"
+        );
+        // 补做 shutdown → join 干净完成。
+        worker.shutdown().expect("shutdown after refusal");
+    }
+
+    /// 关闭后的迟到结果语义（§29.3 最后一条）：shutdown 期间在途作业
+    /// 照常完成（drain），交付给仍在等待的 future；等待方已丢（Abandoned）
+    /// 则显式丢弃。run 层面的"复活防线"由 cancellation e2e 承担
+    /// （rig_ecs_host::cancel_run_mid_flight_discards_late_completion）。
+    #[test]
+    fn shutdown_waits_for_in_flight_decode_and_delivers() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        struct GateBackend {
+            release_rx: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl NeedleBackend for GateBackend {
+            fn bind(
+                &self,
+                _signature: u64,
+                _system: &str,
+                _tools_json: &str,
+                _tool_index: Option<&std::path::Path>,
+            ) -> Result<(), NeedleError> {
+                Ok(())
+            }
+            fn complete(
+                &self,
+                _input: &str,
+                _max_new_tokens: u32,
+                _buffer: &mut [u8],
+            ) -> Result<NeedleResponse, NeedleError> {
+                let _ = self
+                    .release_rx
+                    .lock()
+                    .expect("gate")
+                    .recv();
+                let body = serde_json::to_vec(&json!({
+                    "type": "respond",
+                    "success": true,
+                    "function_calls": [],
+                    "reasoning": "released during drain",
+                }))
+                .expect("serialize");
+                NeedleResponse::parse(&body)
+            }
+            fn reset(&self) {}
+        }
+        let worker = Needle3Worker::new(Arc::new(GateBackend {
+            release_rx: Mutex::new(release_rx),
+        }));
+        let submitted = worker.submit(NeedlePayload {
+            input: "in-flight".into(),
+            max_new_tokens: 8,
+            session: None,
+        });
+        // 放行器：shutdown 的 join 会等在途解码完成——先定时放行。
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            let _ = release_tx.send(());
+        });
+        worker.shutdown().expect("shutdown drains in-flight job");
+        let response = futures_now(submitted.wait).expect("in-flight job delivered");
+        assert_eq!(response.reasoning.as_deref(), Some("released during drain"));
+        let _ = releaser.join();
+        assert!(worker.is_shut_down());
     }
 }
