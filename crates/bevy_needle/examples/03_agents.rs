@@ -37,47 +37,47 @@ fn main() {
     let (weather_tool, time_tool, weather_agent, time_agent) = {
         let world = app.world_mut();
 
-    // ── 两个工具：分别将要绑定到两个 agent ──
-    // 工具实体是全局的：同一个工具可以 attach 给多个 agent（绑定只是实体 id 列表）。
-    let weather_tool = world
-        .spawn(ToolBundle::new(ToolSpec::new(
-            "get_weather",
-            "Get the weather for a city.",
-            ParametersBuilder::new().string("city", "city name").build(),
-        )))
-        .id();
-    let time_tool = world
-        .spawn(ToolBundle::new(ToolSpec::new(
-            "get_time",
-            "Get the current in-game time.",
-            ParametersBuilder::new().build(),
-        )))
-        .id();
+        // ── 两个工具：分别将要绑定到两个 agent ──
+        // 工具实体是全局的：同一个工具可以 attach 给多个 agent（绑定只是实体 id 列表）。
+        let weather_tool = world
+            .spawn(ToolBundle::new(ToolSpec::new(
+                "get_weather",
+                "Get the weather for a city.",
+                ParametersBuilder::new().string("city", "city name").build(),
+            )))
+            .id();
+        let time_tool = world
+            .spawn(ToolBundle::new(ToolSpec::new(
+                "get_time",
+                "Get the current in-game time.",
+                ParametersBuilder::new().build(),
+            )))
+            .id();
 
-    // ── agent A：天气员。演示 system facts 与 max_new_tokens。──
-    let weather_agent = spawn_agent(
-        world,
-        NeedleAgentSpec::new("weather-agent")
-            // system facts = 环境事实，冒号分隔的 k/v；模型用它解析相对表达
-            // （"tomorrow" 需要日期事实才合法）。再次强调：不放指令。
-            .with_system_facts("device: game-console; region: eu-west; date: 2026-09-01")
-            // 单轮生成的 token 上限。工具调用的 JSON 很短，默认 256 绰绰有余；
-            // 只有大参数列表时才需要调大。
-            .with_max_new_tokens(128),
-    )
-    .agent;
-    attach_tool(world, weather_agent, weather_tool).unwrap();
+        // ── agent A：天气员。演示 system facts 与 max_new_tokens。──
+        let weather_agent = spawn_agent(
+            world,
+            NeedleAgentSpec::new("weather-agent")
+                // system facts = 环境事实，冒号分隔的 k/v；模型用它解析相对表达
+                // （"tomorrow" 需要日期事实才合法）。再次强调：不放指令。
+                .with_system_facts("device: game-console; region: eu-west; date: 2026-09-01")
+                // 单轮生成的 token 上限。工具调用的 JSON 很短，默认 256 绰绰有余；
+                // 只有大参数列表时才需要调大。
+                .with_max_new_tokens(128),
+        )
+        .agent;
+        attach_tool(world, weather_agent, weather_tool).unwrap();
 
-    // ── agent B：报时员。演示 max_steps（工具回喂轮数上限）。──
-    let time_agent = spawn_agent(
-        world,
-        // max_steps 限制的是"工具执行→回喂"的轮数（不是消息数）。
-        // 到达上限时 run 以 Completed 收尾并带 RunNote 说明。
-        NeedleAgentSpec::new("time-agent").with_max_steps(3),
-    )
-    .agent;
-    attach_tool(world, time_agent, time_tool).unwrap();
-    (weather_tool, time_tool, weather_agent, time_agent)
+        // ── agent B：报时员。演示 max_steps（工具回喂轮数上限）。──
+        let time_agent = spawn_agent(
+            world,
+            // max_steps 限制的是"工具执行→回喂"的轮数（不是消息数）。
+            // 到达上限时 run 以 Completed 收尾并带 RunNote 说明。
+            NeedleAgentSpec::new("time-agent").with_max_steps(3),
+        )
+        .agent;
+        attach_tool(world, time_agent, time_tool).unwrap();
+        (weather_tool, time_tool, weather_agent, time_agent)
     }; // ← world 借用在此归还（let 解构语句结束）
 
     // ──────────────────────────────────────────────────────────────────────
@@ -139,12 +139,12 @@ fn main() {
 fn drive_until_all_done(app: &mut App, target_done: usize, max_frames: usize) {
     for _ in 0..max_frames {
         app.update();
-        let mut q = app.world_mut().query::<(&RunStatus, Option<&RunFinalized>)>();
+        let mut q = app
+            .world_mut()
+            .query::<(&RunStatus, Option<&RunFinalized>)>();
         let done = q
             .iter(app.world())
-            .filter(|(s, f)| {
-                matches!(s, RunStatus::Completed | RunStatus::Failed) && f.is_some()
-            })
+            .filter(|(s, f)| matches!(s, RunStatus::Completed | RunStatus::Failed) && f.is_some())
             .count();
         if done >= target_done {
             return;

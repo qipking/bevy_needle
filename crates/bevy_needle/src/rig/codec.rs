@@ -13,8 +13,8 @@ use serde_json::json;
 
 use crate::engine::NeedleResponse;
 
-use rig_core::completion::message::{Message, ToolResultContent, UserContent};
 use rig_core::completion::CompletionRequest;
+use rig_core::completion::message::{Message, ToolResultContent, UserContent};
 use rig_core::error::EncodeError;
 
 /// `max_tokens` 缺省时的生成长度（对齐现有 `RunAgent` 默认值）。
@@ -141,11 +141,15 @@ pub fn choice_from_envelope(
     }
     if response.is_call() {
         for (index, call) in response.function_calls.iter().enumerate() {
-            let name = rig_core::message::ToolName::new(call.name.as_str()).unwrap_or_else(
-                |_| rig_core::message::ToolName::new(format!("needle-invalid-{index}"))
-                    .expect("non-empty placeholder"),
-            );
-            choice.push(AssistantContent::tool_call(call_id(seq), name, call.arguments.clone()));
+            let name = rig_core::message::ToolName::new(call.name.as_str()).unwrap_or_else(|_| {
+                rig_core::message::ToolName::new(format!("needle-invalid-{index}"))
+                    .expect("non-empty placeholder")
+            });
+            choice.push(AssistantContent::tool_call(
+                call_id(seq),
+                name,
+                call.arguments.clone(),
+            ));
         }
         return choice;
     }

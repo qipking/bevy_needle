@@ -56,7 +56,8 @@ fn main() {
     let handles = spawn_agent(world, NeedleAgentSpec::new("scripted"));
     attach_tool(world, handles.agent, lamp).unwrap();
 
-    app.world_mut().write_message(RunAgent::new(handles.agent, "turn on the lamp"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "turn on the lamp"));
     drive(&mut app, handles.agent, 300);
 
     println!("脚本回放 run 完成 ✓");
@@ -85,19 +86,24 @@ fn main() {
         .spawn(ToolBundle::new(ToolSpec::new(
             "roll",
             "Roll a dice.",
-            ParametersBuilder::new().integer("sides", "number of sides").build(),
+            ParametersBuilder::new()
+                .integer("sides", "number of sides")
+                .build(),
         )))
         .id();
     register_tool_handler(world2, "roll", |call| {
         let sides = call.args.get("sides").and_then(|v| v.as_i64()).unwrap_or(6);
         // 真·随机数也可以（handler 是你的代码）。
-        let roll = (1..=sides).nth(rand_below(sides as u64) as usize).unwrap_or(1);
+        let roll = (1..=sides)
+            .nth(rand_below(sides as u64) as usize)
+            .unwrap_or(1);
         Ok(ToolOutput::json(json!({ "rolled": roll })))
     });
     let h2 = spawn_agent(world2, NeedleAgentSpec::new("dynamic"));
     attach_tool(world2, h2.agent, dice).unwrap();
 
-    app2.world_mut().write_message(RunAgent::new(h2.agent, "roll a dice"));
+    app2.world_mut()
+        .write_message(RunAgent::new(h2.agent, "roll a dice"));
     drive(&mut app2, h2.agent, 300);
 
     // ──────────────────────────────────────────────────────────────────────
@@ -110,7 +116,8 @@ fn main() {
     let mut app3 = App::new();
     app3.add_plugins(BevyNeedlePlugin::with_backend(logging));
     let h3 = spawn_agent(app3.world_mut(), NeedleAgentSpec::new("proxied"));
-    app3.world_mut().write_message(RunAgent::new(h3.agent, "through the proxy"));
+    app3.world_mut()
+        .write_message(RunAgent::new(h3.agent, "through the proxy"));
     drive(&mut app3, h3.agent, 300);
 
     println!("全部三种注入方式跑通 ✓");
@@ -119,7 +126,10 @@ fn main() {
 // 极简伪随机（示例用，勿用于生产）。
 fn rand_below(n: u64) -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
     nanos as u64 % n.max(1)
 }
 
@@ -177,7 +187,9 @@ fn drive(app: &mut App, agent: Entity, max_frames: usize) {
 }
 
 fn finalized(app: &mut App, agent: Entity) -> usize {
-    let mut q = app.world_mut().query::<(&RunOwner, &RunStatus, Option<&RunFinalized>)>();
+    let mut q = app
+        .world_mut()
+        .query::<(&RunOwner, &RunStatus, Option<&RunFinalized>)>();
     q.iter(app.world())
         .filter(|(o, s, f)| {
             o.0 == agent && matches!(s, RunStatus::Completed | RunStatus::Failed) && f.is_some()
