@@ -127,9 +127,9 @@ fn main() {
         // call.args 是 serde_json::Value；安全取字段的标准写法：
         let text = call
             .args
-            .get("text")                      // Option<&Value>
-            .and_then(|v| v.as_str())         // Option<&str>
-            .unwrap_or_default();             // 缺字段时给空串（引擎约束下其实不会缺）
+            .get("text") // Option<&Value>
+            .and_then(|v| v.as_str()) // Option<&str>
+            .unwrap_or_default(); // 缺字段时给空串（引擎约束下其实不会缺）
 
         // 返回值会原样回喂给引擎 —— 让模型看到"工具执行成功了，结果是…"。
         Ok(ToolOutput::json(json!({ "echoed": text })))

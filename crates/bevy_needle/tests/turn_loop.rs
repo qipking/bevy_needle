@@ -24,7 +24,10 @@ fn collect_replies(app: &mut App) -> Vec<String> {
             replies.push(text.map(|t| t.0.clone()).unwrap_or_default());
         }
         if matches!(status, RunStatus::Failed) {
-            replies.push(format!("[failed] {}", failure.map(|f| f.0.clone()).unwrap_or_default()));
+            replies.push(format!(
+                "[failed] {}",
+                failure.map(|f| f.0.clone()).unwrap_or_default()
+            ));
         }
     }
     replies.sort();
@@ -50,7 +53,8 @@ fn single_turn_completes_without_calls() {
     app.add_plugins(BevyNeedlePlugin::with_backend(mock));
 
     let handles = spawn_agent(app.world_mut(), NeedleAgentSpec::new("a"));
-    app.world_mut().write_message(RunAgent::new(handles.agent, "hello"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "hello"));
     run_until_idle(&mut app, 200);
 
     assert_eq!(collect_replies(&mut app), vec!["nothing to do".to_string()]);
@@ -60,7 +64,10 @@ fn single_turn_completes_without_calls() {
 fn multi_turn_tool_feedback_loop() {
     // 第 1 轮：模型要调用 echo；第 2 轮：收尾
     let mock = MockBackend::new(vec![
-        envelope("call", json!([{ "name": "echo", "arguments": { "text": "hi" } }])),
+        envelope(
+            "call",
+            json!([{ "name": "echo", "arguments": { "text": "hi" } }]),
+        ),
         json!({ "type": "respond", "success": true, "reasoning": "done", "confidence": 0.8 }),
     ]);
     let mut app = App::new();
@@ -80,7 +87,8 @@ fn multi_turn_tool_feedback_loop() {
     let handles = spawn_agent(world, NeedleAgentSpec::new("a"));
     attach_tool(world, handles.agent, tool).unwrap();
 
-    app.world_mut().write_message(RunAgent::new(handles.agent, "say hi"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "say hi"));
     run_until_idle(&mut app, 400);
 
     let replies = collect_replies(&mut app);
@@ -88,9 +96,7 @@ fn multi_turn_tool_feedback_loop() {
 
     // 已执行结果应包含 handler 产物
     let executed: Vec<serde_json::Value> = {
-        let mut q = app
-            .world_mut()
-            .query::<&RunExecutedResults>();
+        let mut q = app.world_mut().query::<&RunExecutedResults>();
         q.iter(app.world())
             .next()
             .map(|r| r.0.clone())
@@ -115,14 +121,20 @@ fn confidence_gate_blocks_execution() {
     let world = app.world_mut();
     let tool = world
         .spawn(ToolBundle::new(ToolSpec::new(
-            "echo", "Echo", ParametersBuilder::new().build(),
+            "echo",
+            "Echo",
+            ParametersBuilder::new().build(),
         )))
         .id();
     register_tool_handler(world, "echo", |_call| Ok(ToolOutput::ok()));
-    let handles = spawn_agent(world, NeedleAgentSpec::new("a").with_confidence_threshold(0.5));
+    let handles = spawn_agent(
+        world,
+        NeedleAgentSpec::new("a").with_confidence_threshold(0.5),
+    );
     attach_tool(world, handles.agent, tool).unwrap();
 
-    app.world_mut().write_message(RunAgent::new(handles.agent, "hi"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "hi"));
     run_until_idle(&mut app, 200);
 
     // 新契约：Escalating → Escalated（正常收尾），Failed 只留给引擎错误
@@ -142,8 +154,14 @@ fn confidence_gate_blocks_execution() {
         .next()
         .map(|n| n.0.clone())
         .unwrap_or_default();
-    assert!(note.contains("置信度"), "note should explain escalation: {note}");
-    assert!(note.contains("0.01") && note.contains("0.50"), "note should carry numbers: {note}");
+    assert!(
+        note.contains("置信度"),
+        "note should explain escalation: {note}"
+    );
+    assert!(
+        note.contains("0.01") && note.contains("0.50"),
+        "note should carry numbers: {note}"
+    );
 
     // 绝不产生工具调用（契约核心：不执行）
     let invocations = app
@@ -158,7 +176,8 @@ fn confidence_gate_blocks_execution() {
     assert!(
         transcript
             .iter()
-            .any(|(role, text)| matches!(role, ChatMessageRole::Assistant) && text.contains("已升级")),
+            .any(|(role, text)| matches!(role, ChatMessageRole::Assistant)
+                && text.contains("已升级")),
         "transcript should record escalation: {transcript:?}"
     );
 
@@ -190,7 +209,8 @@ fn unknown_tool_error_is_fed_back_and_run_finishes() {
     app.add_plugins(BevyNeedlePlugin::with_backend(mock));
 
     let handles = spawn_agent(app.world_mut(), NeedleAgentSpec::new("a"));
-    app.world_mut().write_message(RunAgent::new(handles.agent, "do it"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "do it"));
     run_until_idle(&mut app, 300);
 
     assert_eq!(collect_replies(&mut app), vec!["gave up".to_string()]);
@@ -200,7 +220,10 @@ fn unknown_tool_error_is_fed_back_and_run_finishes() {
 fn max_steps_bounds_the_loop() {
     // 引擎永远要求调用 echo —— max_steps=2 时应在两轮后强制收尾
     let mock = MockBackend::dynamic(|_input| {
-        envelope("call", json!([{ "name": "echo", "arguments": { "text": "x" } }]))
+        envelope(
+            "call",
+            json!([{ "name": "echo", "arguments": { "text": "x" } }]),
+        )
     });
     let mut app = App::new();
     app.add_plugins(BevyNeedlePlugin::with_backend(mock));
@@ -208,7 +231,9 @@ fn max_steps_bounds_the_loop() {
     let world = app.world_mut();
     let tool = world
         .spawn(ToolBundle::new(ToolSpec::new(
-            "echo", "Echo", ParametersBuilder::new().string("text", "input").build(),
+            "echo",
+            "Echo",
+            ParametersBuilder::new().string("text", "input").build(),
         )))
         .id();
     register_tool_handler(world, "echo", |call| {
@@ -217,7 +242,8 @@ fn max_steps_bounds_the_loop() {
     let handles = spawn_agent(world, NeedleAgentSpec::new("a").with_max_steps(2));
     attach_tool(world, handles.agent, tool).unwrap();
 
-    app.world_mut().write_message(RunAgent::new(handles.agent, "loop"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "loop"));
     run_until_idle(&mut app, 600);
 
     let has_note = app
@@ -239,12 +265,16 @@ fn engine_unavailable_fails_runs_with_actionable_error() {
     app.add_plugins(BevyNeedlePlugin::default());
 
     let handles = spawn_agent(app.world_mut(), NeedleAgentSpec::new("a"));
-    app.world_mut().write_message(RunAgent::new(handles.agent, "hi"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "hi"));
     run_until_idle(&mut app, 200);
 
     let replies = collect_replies(&mut app);
     assert_eq!(replies.len(), 1, "run should terminate");
-    assert!(replies[0].starts_with("[failed]"), "should fail: {replies:?}");
+    assert!(
+        replies[0].starts_with("[failed]"),
+        "should fail: {replies:?}"
+    );
 }
 
 #[test]
@@ -257,17 +287,26 @@ fn toolset_change_rebinds_engine() {
     let (tool_a, tool_b, handles) = {
         let world = app.world_mut();
         let tool_a = world
-            .spawn(ToolBundle::new(ToolSpec::new("a", "Tool A", ParametersBuilder::new().build())))
+            .spawn(ToolBundle::new(ToolSpec::new(
+                "a",
+                "Tool A",
+                ParametersBuilder::new().build(),
+            )))
             .id();
         let tool_b = world
-            .spawn(ToolBundle::new(ToolSpec::new("b", "Tool B", ParametersBuilder::new().build())))
+            .spawn(ToolBundle::new(ToolSpec::new(
+                "b",
+                "Tool B",
+                ParametersBuilder::new().build(),
+            )))
             .id();
         let handles = spawn_agent(world, NeedleAgentSpec::new("a"));
         attach_tool(world, handles.agent, tool_a).unwrap();
         (tool_a, tool_b, handles.agent)
     };
 
-    app.world_mut().write_message(RunAgent::new(handles, "first"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles, "first"));
     run_until_idle(&mut app, 200);
     let first = collect_replies(&mut app);
     assert_eq!(first.len(), 1);
@@ -279,7 +318,8 @@ fn toolset_change_rebinds_engine() {
         attach_tool(world, handles, tool_b).unwrap();
     }
 
-    app.world_mut().write_message(RunAgent::new(handles, "second"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles, "second"));
     run_until_idle(&mut app, 200);
     let second = collect_replies(&mut app);
     assert_eq!(second.len(), 2, "second run should also complete");
@@ -295,8 +335,11 @@ fn reset_agent_sends_engine_reset() {
     app.add_plugins(BevyNeedlePlugin::with_backend(mock));
 
     let handles = spawn_agent(app.world_mut(), NeedleAgentSpec::new("a"));
-    app.world_mut().write_message(ResetAgent { agent: handles.agent });
-    app.world_mut().write_message(RunAgent::new(handles.agent, "hi"));
+    app.world_mut().write_message(ResetAgent {
+        agent: handles.agent,
+    });
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "hi"));
     run_until_idle(&mut app, 300);
 
     assert_eq!(collect_replies(&mut app), vec!["after reset".to_string()]);
@@ -320,11 +363,15 @@ fn schema_error_marks_agent_as_errored_not_panic() {
     let handles = spawn_agent(world, NeedleAgentSpec::new("a"));
     attach_tool(world, handles.agent, bad_tool).unwrap();
 
-    app.world_mut().write_message(RunAgent::new(handles.agent, "hi"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "hi"));
     run_until_idle(&mut app, 200);
 
     let index = app.world().resource::<AgentToolIndex>();
-    assert!(index.error(handles.agent).is_some(), "snapshot error should be recorded");
+    assert!(
+        index.error(handles.agent).is_some(),
+        "snapshot error should be recorded"
+    );
 }
 
 #[test]
@@ -338,15 +385,19 @@ fn mock_counts_track_turns() {
 
     let world = app.world_mut();
     let tool = world
-        .spawn(ToolBundle::new(ToolSpec::new("echo", "Echo", ParametersBuilder::new().build())))
+        .spawn(ToolBundle::new(ToolSpec::new(
+            "echo",
+            "Echo",
+            ParametersBuilder::new().build(),
+        )))
         .id();
     register_tool_handler(world, "echo", |_call| Ok(ToolOutput::ok()));
     let handles = spawn_agent(world, NeedleAgentSpec::new("a"));
     attach_tool(world, handles.agent, tool).unwrap();
 
-    app.world_mut().write_message(RunAgent::new(handles.agent, "hi"));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "hi"));
     run_until_idle(&mut app, 400);
 
     assert_eq!(collect_replies(&mut app), vec![String::new()]);
-
 }

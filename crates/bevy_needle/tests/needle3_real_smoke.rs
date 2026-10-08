@@ -4,7 +4,7 @@
 //! （发行产物；缺失则整测跳过——CI 与无引擎环境不阻塞）。
 #![cfg(feature = "dlopen")]
 
-use bevy_needle::engine::{discover_library_for, EngineGeneration};
+use bevy_needle::engine::{EngineGeneration, discover_library_for};
 use bevy_needle::ffi::FfiEngine;
 use std::path::PathBuf;
 
@@ -31,7 +31,8 @@ fn needle3_real_smoke() {
     let blob = std::fs::read(&base).expect("read base weights");
     ffi.load_weights(&blob).expect("load base weights");
 
-    ffi.init("you are a console assistant", "[]", None).expect("init");
+    ffi.init("you are a console assistant", "[]", None)
+        .expect("init");
     let mut buf = vec![0u8; 65536];
     let n = ffi.complete("hello", 64, &mut buf).expect("complete");
     let envelope = std::str::from_utf8(&buf[..n]).unwrap();

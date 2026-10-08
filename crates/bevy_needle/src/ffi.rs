@@ -25,7 +25,7 @@
 //! 同生命周期；这里转成 `'static` fn 指针的前提是 `Library` 句柄与本结构体共存
 //! （`_lib` 字段）且永不 drop——对 dlopen 的引擎而言成立（进程级单例）。
 
-use std::ffi::{c_char, c_int, c_ulonglong, CString};
+use std::ffi::{CString, c_char, c_int, c_ulonglong};
 use std::path::Path;
 
 use crate::error::NeedleError;
@@ -131,7 +131,12 @@ impl FfiEngine {
 
     /// `needle_complete`：阻塞解码一轮，把 NUL 结尾的 JSON 信封写进 `out`，
     /// 返回有效字节数。
-    pub fn complete(&self, text: &str, max_new_tokens: u32, out: &mut [u8]) -> Result<usize, NeedleError> {
+    pub fn complete(
+        &self,
+        text: &str,
+        max_new_tokens: u32,
+        out: &mut [u8],
+    ) -> Result<usize, NeedleError> {
         let text = cstring("text", text)?;
         // SAFETY: out 由调用方持有；引擎只在调用期间写入。
         let rc = unsafe {

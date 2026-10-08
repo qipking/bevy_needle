@@ -35,27 +35,30 @@ pub mod model;
 pub mod security;
 pub mod worker;
 
-pub use adapter::{needle3_model, NEEDLE_LABEL};
-pub use gate::{ConfidenceGate, GATE_LAYER};
+pub use adapter::{NEEDLE_LABEL, needle3_model};
 pub use codec::{
-    choice_from_envelope, encode_payload, terminal_input, tool_results_input, NeedlePayload,
-    SessionSlot,
+    NeedlePayload, SessionSlot, choice_from_envelope, encode_payload, terminal_input,
+    tool_results_input,
 };
+pub use gate::{ConfidenceGate, GATE_LAYER};
 pub use model::{Needle3Model, Needle3Transport, Needle3Wire};
 pub use worker::{Needle3Worker, Submitted, WaitFuture, WorkerError};
 
 #[cfg(feature = "rig-ecs")]
 pub use host::{
+    AgentSpec,
     needle_model_key,
     // §29.2 任务 A：注册+分类同事务
-    register_local_model, register_remote_model,
+    register_local_model,
+    register_remote_model,
     // G2-B 双轨（§27.3）：B1 纯工具轨 / B2 World 工具轨（register_open+WorldOutcome）
-    register_tool_fn, register_world_tool,
-    spawn_agent, tool_key, AgentSpec,
+    register_tool_fn,
+    register_world_tool,
+    spawn_agent,
+    tool_key,
 };
 
 #[cfg(feature = "rig-ecs")]
 pub use security::{
-    install_security_guard, security_guard, ModelClass, NeedleSecurityPolicy,
-    SecurityGuard,
+    ModelClass, NeedleSecurityPolicy, SecurityGuard, install_security_guard, security_guard,
 };

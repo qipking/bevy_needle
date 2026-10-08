@@ -24,7 +24,7 @@ use rig_core::completion::message::{Message, ToolResultContent};
 use rig_core::completion::{
     CompletionRequest, CompletionResponse, FinishReason, ProviderCapabilities, Usage,
 };
-use rig_core::driver::{Exchange, Model, Opening, Opened, Transport};
+use rig_core::driver::{Exchange, Model, Opened, Opening, Transport};
 use rig_core::error::{EncodeError, ProviderError};
 use rig_core::message::{CallId, ToolName};
 use rig_core::operation::{Block, Completion, Finish};
@@ -197,10 +197,12 @@ impl<'id> Decoder<'id, Completion, NeedleFrame> for NeedleDecoder {
         }
         if response.is_call() {
             for (index, call) in response.function_calls.iter().enumerate() {
-                let name = ToolName::new(call.name.as_str())
-                    .map_err(|_| ProviderError::Response("needle tool call has an empty name".into()))?;
-                let arguments = serde_json::to_value(&call.arguments)
-                    .map_err(|err| ProviderError::Response(format!("needle call arguments: {err}")))?;
+                let name = ToolName::new(call.name.as_str()).map_err(|_| {
+                    ProviderError::Response("needle tool call has an empty name".into())
+                })?;
+                let arguments = serde_json::to_value(&call.arguments).map_err(|err| {
+                    ProviderError::Response(format!("needle call arguments: {err}"))
+                })?;
                 // `Out::whole`：单步开-写-收；provider item 为 Null（无原生项）。
                 // call id 经 codec::call_id 单点 mint（I18 v27）。
                 out.whole(
@@ -249,7 +251,8 @@ impl Reassemble<NeedleFrame> for NeedleDocument {
 #[derive(Clone)]
 pub struct Needle3Model {
     inner: Model<Needle3Wire, Needle3Transport>,
-}impl std::fmt::Debug for Needle3Model {
+}
+impl std::fmt::Debug for Needle3Model {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Needle3Model")
             .field("provider", &self.inner.name())
@@ -264,10 +267,7 @@ impl Needle3Model {
     /// `label` 是 `describe().model`（诊断与 route 键语义）。
     pub fn new(worker: Arc<Needle3Worker>, label: impl Into<String>) -> Self {
         Self {
-            inner: Model::new(
-                Needle3Wire::new(label),
-                Needle3Transport { worker },
-            ),
+            inner: Model::new(Needle3Wire::new(label), Needle3Transport { worker }),
         }
     }
 
@@ -275,7 +275,8 @@ impl Needle3Model {
     pub fn call(
         &self,
         request: impl Into<CompletionRequest>,
-    ) -> impl Future<Output = Result<CompletionResponse, ProviderError>> + WasmCompatSend + 'static {
+    ) -> impl Future<Output = Result<CompletionResponse, ProviderError>> + WasmCompatSend + 'static
+    {
         self.inner.call(request)
     }
 

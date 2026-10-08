@@ -44,7 +44,10 @@ fn watch_escalations(
     }
 }
 
-fn watch_executions(mut completed: MessageReader<ToolCallCompleted>, mut log: ResMut<ExecutedTools>) {
+fn watch_executions(
+    mut completed: MessageReader<ToolCallCompleted>,
+    mut log: ResMut<ExecutedTools>,
+) {
     for m in completed.read() {
         log.0.push(m.call.name.clone());
     }
@@ -85,7 +88,9 @@ fn main() {
         .spawn(ToolBundle::new(ToolSpec::new(
             "fire_missiles",
             "Fire missiles (dangerous!).",
-            ParametersBuilder::new().integer("count", "how many").build(),
+            ParametersBuilder::new()
+                .integer("count", "how many")
+                .build(),
         )))
         .id();
     let hello = world
@@ -135,19 +140,24 @@ fn main() {
         !executed.0.iter().any(|n| n == "fire_missiles"),
         "低置信度调用绝不能被执行！"
     );
-    assert_eq!(executed.0, vec!["say_hello".to_string()], "只有高置信度调用被执行");
+    assert_eq!(
+        executed.0,
+        vec!["say_hello".to_string()],
+        "只有高置信度调用被执行"
+    );
 
     // run 结果核对：第一个走升级语义（Escalated，注明门限），第二个 Completed。
     println!("✓ 低置信度调用被拦截（confidence={confidence} < threshold={threshold}），未执行");
     println!("✓ 升级后重问正常执行: {:?}", executed.0);
     println!();
-    println!("提示：RunEscalation {:#?} 已写入 EscalationLog ——", escalations.entries);
+    println!(
+        "提示：RunEscalation {:#?} 已写入 EscalationLog ——",
+        escalations.entries
+    );
     println!("      真实产品在这里接重试/更强模型/人工确认。");
 
     // 查看第一个 run 的升级说明文本。
-    let mut q = app
-        .world_mut()
-        .query::<(&RunStatus, Option<&RunNote>)>();
+    let mut q = app.world_mut().query::<(&RunStatus, Option<&RunNote>)>();
     for (status, note) in q.iter(app.world()) {
         if matches!(status, RunStatus::Escalated)
             && let Some(n) = note
