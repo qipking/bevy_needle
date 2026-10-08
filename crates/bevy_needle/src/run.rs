@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::{
     agent::PrimarySession,
-    session::{ChatMessageRole, spawn_chat_message},
+    session::{spawn_chat_message, ChatMessageRole},
 };
 
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]

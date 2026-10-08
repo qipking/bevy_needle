@@ -16,9 +16,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use bevy::{
-    input::{ButtonState, keyboard::KeyboardInput},
+    input::{keyboard::KeyboardInput, ButtonState},
     prelude::*,
-    render::view::screenshot::{Screenshot, save_to_disk},
+    render::view::screenshot::{save_to_disk, Screenshot},
     window::{Ime, WindowResolution},
 };
 use bevy_needle::prelude::*;
@@ -89,11 +89,7 @@ fn parse_autopilot() -> Option<AutoPilot> {
         let steps = (0..10)
             .map(|i| (180 + i * 6, None))
             .collect::<VecDeque<_>>();
-        return Some(AutoPilot {
-            steps,
-            frame: 0,
-            shot_index: 0,
-        });
+        return Some(AutoPilot { steps, frame: 0, shot_index: 0 });
     }
     // 每条指令间隔约 4 秒（60fps × 240 帧），给引擎留出解码时间
     let commands: &[&str] = if std::env::var("BEVY_NEEDLE_QUICK").is_ok_and(|v| v == "1") {
@@ -148,14 +144,16 @@ struct UiActionRequest {
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "bevy_needle × univis_ui — 文字操控 UI 演示".into(),
-                resolution: WindowResolution::new(1280, 820),
+        .add_plugins(
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "bevy_needle × univis_ui — 文字操控 UI 演示".into(),
+                    resolution: WindowResolution::new(1280, 820),
+                    ..default()
+                }),
                 ..default()
             }),
-            ..default()
-        }))
+        )
         .add_plugins(UnivisUiPlugin)
         .add_plugins(BevyNeedlePlugin::default())
         .init_resource::<UiTargets>()
@@ -166,10 +164,7 @@ fn main() {
         // 实验开关：BEVY_NEEDLE_FULL_SYNC=1 关闭 univis 增量渲染（每帧全量同步）
         .add_systems(Startup, setup_rollout_override)
         .add_systems(Startup, setup_autopilot)
-        .add_systems(
-            Update,
-            (diagnose_frame_changes, run_autopilot, dump_ui_state),
-        )
+        .add_systems(Update, (diagnose_frame_changes, run_autopilot, dump_ui_state))
         .add_message::<UiActionRequest>()
         .add_systems(Startup, (setup_camera, setup_ui, setup_agent).chain())
         .add_systems(
@@ -290,12 +285,7 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
     let status = commands
         .spawn((
             ChildOf(panel),
-            label(
-                &font,
-                "就绪 · 输入英文指令后回车",
-                15.0,
-                Color::srgb(0.55, 0.75, 0.95),
-            ),
+            label(&font, "就绪 · 输入英文指令后回车", 15.0, Color::srgb(0.55, 0.75, 0.95)),
             Name::new("status"),
             StatusLabel,
         ))
@@ -306,7 +296,9 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
     let settings = commands
         .spawn((
             ChildOf(panel),
-            UNode { ..default() },
+            UNode {
+                ..default()
+            },
             ULayout {
                 display: UDisplay::Flex,
                 flex_direction: UFlexDirection::Column,
@@ -320,10 +312,7 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
 
     // 主题选择
     let theme_row = row(&mut commands, settings);
-    commands.spawn((
-        ChildOf(theme_row),
-        label(&font, "主题", 16.0, Color::srgb(0.8, 0.85, 0.92)),
-    ));
+    commands.spawn((ChildOf(theme_row), label(&font, "主题", 16.0, Color::srgb(0.8, 0.85, 0.92))));
     let theme_select = commands
         .spawn((
             ChildOf(theme_row),
@@ -343,10 +332,7 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
 
     // 开关行
     let toggle_row = row(&mut commands, settings);
-    commands.spawn((
-        ChildOf(toggle_row),
-        label(&font, "动画", 16.0, Color::srgb(0.8, 0.85, 0.92)),
-    ));
+    commands.spawn((ChildOf(toggle_row), label(&font, "动画", 16.0, Color::srgb(0.8, 0.85, 0.92))));
     let anim_toggle = commands
         .spawn((
             ChildOf(toggle_row),
@@ -355,10 +341,7 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
         ))
         .id();
     targets.0.insert("anim_toggle".into(), anim_toggle);
-    commands.spawn((
-        ChildOf(toggle_row),
-        label(&font, "音效", 16.0, Color::srgb(0.8, 0.85, 0.92)),
-    ));
+    commands.spawn((ChildOf(toggle_row), label(&font, "音效", 16.0, Color::srgb(0.8, 0.85, 0.92))));
     let sound_toggle = commands
         .spawn((
             ChildOf(toggle_row),
@@ -370,10 +353,7 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
 
     // 音量
     let volume_row = row(&mut commands, settings);
-    commands.spawn((
-        ChildOf(volume_row),
-        label(&font, "音量", 16.0, Color::srgb(0.8, 0.85, 0.92)),
-    ));
+    commands.spawn((ChildOf(volume_row), label(&font, "音量", 16.0, Color::srgb(0.8, 0.85, 0.92))));
     let volume_seekbar = commands
         .spawn((
             ChildOf(volume_row),
@@ -385,10 +365,7 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
 
     // 亮度
     let bright_row = row(&mut commands, settings);
-    commands.spawn((
-        ChildOf(bright_row),
-        label(&font, "亮度", 16.0, Color::srgb(0.8, 0.85, 0.92)),
-    ));
+    commands.spawn((ChildOf(bright_row), label(&font, "亮度", 16.0, Color::srgb(0.8, 0.85, 0.92))));
     let brightness = commands
         .spawn((
             ChildOf(bright_row),
@@ -404,22 +381,14 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
     // 按钮行
     let button_row = row(&mut commands, settings);
     let reset_button = commands
-        .spawn((
-            ChildOf(button_row),
-            UButton::primary(),
-            Name::new("reset_button"),
-        ))
+        .spawn((ChildOf(button_row), UButton::primary(), Name::new("reset_button")))
         .with_children(|b| {
             b.spawn(label(&font, "重置", 15.0, Color::WHITE));
         })
         .id();
     targets.0.insert("reset_button".into(), reset_button);
     let about_button = commands
-        .spawn((
-            ChildOf(button_row),
-            UButton::secondary(),
-            Name::new("about_button"),
-        ))
+        .spawn((ChildOf(button_row), UButton::secondary(), Name::new("about_button")))
         .with_children(|b| {
             b.spawn(label(&font, "关于", 15.0, Color::WHITE));
         })
@@ -468,11 +437,7 @@ fn setup_ui(mut commands: Commands, server: Res<AssetServer>, mut targets: ResMu
             },
         ))
         .id();
-    commands.spawn((
-        ChildOf(input_wrap),
-        label(&font, "> _", 16.0, Color::srgb(0.65, 0.95, 0.7)),
-        InputLineLabel,
-    ));
+    commands.spawn((ChildOf(input_wrap), label(&font, "> _", 16.0, Color::srgb(0.65, 0.95, 0.7)), InputLineLabel));
 
     commands.spawn((
         ChildOf(chat),
@@ -509,23 +474,18 @@ fn row(commands: &mut Commands, parent: Entity) -> Entity {
 
 fn setup_agent(world: &mut World) {
     let world = world;
-    let mk_tool =
-        |world: &mut World, name: &str, description: &str, params: serde_json::Value| -> Entity {
-            world
-                .spawn(ToolBundle::new(ToolSpec::new(name, description, params)))
-                .id()
-        };
+    let mk_tool = |world: &mut World, name: &str, description: &str, params: serde_json::Value| -> Entity {
+        world
+            .spawn(ToolBundle::new(ToolSpec::new(name, description, params)))
+            .id()
+    };
 
     let theme_tool = mk_tool(
         world,
         "set_theme",
         "Change the console theme and background color.",
         ParametersBuilder::new()
-            .str_enum(
-                "theme",
-                &["ocean", "sunset", "forest", "mono"],
-                "theme name",
-            )
+            .str_enum("theme", &["ocean", "sunset", "forest", "mono"], "theme name")
             .build(),
     );
     let volume_tool = mk_tool(
@@ -584,19 +544,11 @@ fn setup_agent(world: &mut World) {
         })))
     });
     register_tool_handler(world, "set_volume", |call| {
-        let percent = call
-            .args
-            .get("percent")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        let percent = call.args.get("percent").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(ToolOutput::json(json!({ "percent": percent })))
     });
     register_tool_handler(world, "set_brightness", |call| {
-        let percent = call
-            .args
-            .get("percent")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        let percent = call.args.get("percent").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(ToolOutput::json(json!({ "percent": percent })))
     });
     register_tool_handler(world, "animation_on", |_call| {
@@ -666,26 +618,17 @@ fn dump_ui_state(
     if let Some(e) = get("anim_toggle")
         && let Ok(t) = toggles.get(e)
     {
-        info!(
-            "anim_toggle: checked={} offset={:.3}",
-            t.checked, t.current_offset
-        );
+        info!("anim_toggle: checked={} offset={:.3}", t.checked, t.current_offset);
     }
     if let Some(e) = get("sound_toggle")
         && let Ok(t) = toggles.get(e)
     {
-        info!(
-            "sound_toggle: checked={} offset={:.3}",
-            t.checked, t.current_offset
-        );
+        info!("sound_toggle: checked={} offset={:.3}", t.checked, t.current_offset);
     }
     if let Some(e) = get("volume_seekbar")
         && let Ok(sb) = seeks.get(e)
     {
-        info!(
-            "volume_seekbar: value={:.3} range=[{},{}]",
-            sb.value, sb.min_value, sb.max_value
-        );
+        info!("volume_seekbar: value={:.3} range=[{},{}]", sb.value, sb.min_value, sb.max_value);
     }
     if let Some(e) = get("brightness_progress")
         && let Ok(b) = bars.get(e)
@@ -695,13 +638,7 @@ fn dump_ui_state(
     if let Some(e) = get("theme_select")
         && let Ok(sel) = selects.get(e)
     {
-        info!(
-            "theme_select: selected_index={:?} value={:?}",
-            sel.selected_index,
-            sel.options
-                .get(sel.selected_index.unwrap_or(0))
-                .map(|o| &o.value)
-        );
+        info!("theme_select: selected_index={:?} value={:?}", sel.selected_index, sel.options.get(sel.selected_index.unwrap_or(0)).map(|o| &o.value));
     }
     if let Some(e) = get("title")
         && let Ok(l) = labels.get(e)
@@ -802,9 +739,7 @@ fn run_autopilot(
         );
         pilot.shot_index += 1;
         info!("截图 -> {path}");
-        commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(path));
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     }
 }
 
@@ -866,10 +801,7 @@ fn capture_keyboard(
     }
 }
 
-fn sync_input_line(
-    buffer: Res<InputBuffer>,
-    mut labels: Query<&mut UTextLabel, With<InputLineLabel>>,
-) {
+fn sync_input_line(buffer: Res<InputBuffer>, mut labels: Query<&mut UTextLabel, With<InputLineLabel>>) {
     if buffer.is_changed() {
         for mut text_label in &mut labels {
             let cursor = if buffer.0.is_empty() { "_" } else { "▏" };
@@ -878,10 +810,7 @@ fn sync_input_line(
     }
 }
 
-fn sync_status_line(
-    status: Res<StatusLine>,
-    mut labels: Query<&mut UTextLabel, With<StatusLabel>>,
-) {
+fn sync_status_line(status: Res<StatusLine>, mut labels: Query<&mut UTextLabel, With<StatusLabel>>) {
     if status.is_changed() && !status.0.is_empty() {
         for mut text_label in &mut labels {
             text_label.text = status.0.clone();
@@ -935,11 +864,7 @@ fn poll_widget_events(
     mut log: ResMut<ChatLog>,
 ) {
     for event in toggles.read() {
-        log.push(format!(
-            "[UI] 开关 {} → {}",
-            event.entity,
-            if event.checked { "on" } else { "off" }
-        ));
+        log.push(format!("[UI] 开关 {} → {}", event.entity, if event.checked { "on" } else { "off" }));
     }
     for event in selects.read() {
         log.push(format!("[UI] 主题选择 → {} ({})", event.label, event.value));
@@ -999,14 +924,8 @@ fn apply_tool_effects(
         match action.action {
             "reset" => {
                 reset_ui_defaults(
-                    &targets,
-                    &mut theme,
-                    &mut nodes,
-                    &mut labels,
-                    &mut toggles,
-                    &mut seekbars,
-                    &mut progress,
-                    &mut selects,
+                    &targets, &mut theme, &mut nodes, &mut labels, &mut toggles, &mut seekbars,
+                    &mut progress, &mut selects,
                 );
                 log.push("↺ 已恢复默认设置");
             }
@@ -1034,10 +953,7 @@ fn apply_tool_effects(
 
         let detail = match name {
             "set_theme" => {
-                let theme_name = args
-                    .get("theme")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("ocean");
+                let theme_name = args.get("theme").and_then(|v| v.as_str()).unwrap_or("ocean");
                 let bg = theme_background(theme_name);
                 if let Some(root) = resolve_target(&targets, "root")
                     && let Ok(mut node) = nodes.get_mut(root)
@@ -1058,7 +974,10 @@ fn apply_tool_effects(
                 // 同步下拉选择器的显示，避免"主题已换但选择器还显示旧值"
                 if let Some(select_entity) = resolve_target(&targets, "theme_select")
                     && let Ok(mut select) = selects.get_mut(select_entity)
-                    && let Some(index) = select.options.iter().position(|o| o.value == theme_name)
+                    && let Some(index) = select
+                        .options
+                        .iter()
+                        .position(|o| o.value == theme_name)
                 {
                     select.selected_index = Some(index);
                 }
@@ -1090,10 +1009,7 @@ fn apply_tool_effects(
                     toggle.checked = on;
                     // 读回探针：确认 ECS 状态真的翻转了（区分"ECS没变" vs "视觉没跟上"）
                     if let Ok(readback) = toggles.get(entity) {
-                        info!(
-                            "[verify] anim_toggle.checked={} offset={:.3}",
-                            readback.checked, readback.current_offset
-                        );
+                        info!("[verify] anim_toggle.checked={} offset={:.3}", readback.checked, readback.current_offset);
                     }
                 }
                 format!("动画 → {}", if on { "on" } else { "off" })
@@ -1108,10 +1024,7 @@ fn apply_tool_effects(
                 format!("标题 → {text:?}")
             }
             "set_title_color" => {
-                let color_name = args
-                    .get("color")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("white");
+                let color_name = args.get("color").and_then(|v| v.as_str()).unwrap_or("white");
                 if let Some(title) = resolve_target(&targets, "title")
                     && let Ok(mut text_label) = labels.get_mut(title)
                 {
@@ -1207,11 +1120,7 @@ fn report_run_outcomes(
         if let Some(run) = message.run {
             log.push(format!("✗ 失败: {}", message.error));
             if let Ok((_, _, last)) = runs.get(run) {
-                if let Some(conf) = last
-                    .and_then(|l| l.0.as_ref())
-                    .and_then(|v| v.get("confidence"))
-                    .and_then(|c| c.as_f64())
-                {
+                if let Some(conf) = last.and_then(|l| l.0.as_ref()).and_then(|v| v.get("confidence")).and_then(|c| c.as_f64()) {
                     status.0 = format!("失败（confidence {conf:.2}）");
                 }
             }
