@@ -46,10 +46,7 @@ fn observe_frames(
     for (entity, status, turn, in_flight, awaiting, result, failure, note) in &runs {
         // 终结态且已打印过会重复出现 —— 用状态变化判断：只在非 Completed/Failed
         // 或第一帧看到时打印。简化：跳过已完成且无 in-flight 的稳定帧。
-        if matches!(
-            status,
-            RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled
-        ) {
+        if matches!(status, RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled) {
             continue; // 终结态由最后的总结打印，不逐帧刷
         }
         // 组装一行紧凑的状态快照。
@@ -72,12 +69,7 @@ fn observe_frames(
         if let Some(n) = note {
             parts.push(format!("注={:?}", n.0));
         }
-        println!(
-            "  帧{:>3} run#{} ─ {}",
-            frame.0,
-            entity.index(),
-            parts.join(" ")
-        );
+        println!("  帧{:>3} run#{} ─ {}", frame.0, entity.index(), parts.join(" "));
     }
 }
 
@@ -169,10 +161,7 @@ fn main() {
     // ── 收尾后检查累积结果 ──
     let executed: Vec<serde_json::Value> = {
         let mut q = app.world_mut().query::<&RunExecutedResults>();
-        q.iter(app.world())
-            .next()
-            .map(|r| r.0.clone())
-            .unwrap_or_default()
+        q.iter(app.world()).next().map(|r| r.0.clone()).unwrap_or_default()
     };
     println!("── 累积执行结果（对应 Python run() 的 results）──");
     for (i, value) in executed.iter().enumerate() {

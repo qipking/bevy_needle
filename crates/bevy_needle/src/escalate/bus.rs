@@ -3,8 +3,8 @@
 //! 与 `needle_runtime` 同款形态：`Sender` 克隆安全（driver worker 侧持有），
 //! `Receiver` 包 `Mutex` 以满足 `Resource: Sync`；ECS 每帧 `drain` 非阻塞收割。
 
-use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::Mutex;
 
 use bevy_ecs::prelude::Resource;
 

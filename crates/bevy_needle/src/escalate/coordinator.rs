@@ -22,7 +22,7 @@ use std::sync::Arc;
 use crate::agent::AgentToolRefs;
 use crate::policy::EscalationPolicy;
 use crate::run::{
-    RunLastResponse, RunOwner, RunSession, RunStatus, mark_run_completed, mark_run_failed,
+    mark_run_completed, mark_run_failed, RunLastResponse, RunOwner, RunSession, RunStatus,
 };
 use crate::session::collect_transcript;
 use crate::tool::ToolSpec;
@@ -140,15 +140,7 @@ fn submit_fresh(world: &mut World) {
             }
             Err(error) => {
                 // driver 已注册但 submit 自身报错 → 「试过且坏了」，进下一档或 Failed
-                fail_after_attempt(
-                    world,
-                    run,
-                    tier,
-                    0,
-                    EscalationReason::BelowConfidence,
-                    now,
-                    error,
-                );
+                fail_after_attempt(world, run, tier, 0, EscalationReason::BelowConfidence, now, error);
             }
         }
     }
@@ -174,10 +166,11 @@ fn submit_tier(
 
     // I25：capability 与 tier 的 target 不一致 → 该 tier 不可用（Policy 错误，
     // 宿主配置问题；升级到别的 tier 无济于事，由调用方按「没试」收尾）。
-    let target =
-        policy.tiers.get(tier as usize).copied().ok_or_else(|| {
-            DriverError::Policy(format!("tier {tier} out of policy tiers bounds"))
-        })?;
+    let target = policy
+        .tiers
+        .get(tier as usize)
+        .copied()
+        .ok_or_else(|| DriverError::Policy(format!("tier {tier} out of policy tiers bounds")))?;
     if driver.capability() != target {
         return Err(DriverError::Policy(format!(
             "driver {} (capability {:?}) bound to tier {tier} whose target is {:?}",
@@ -299,15 +292,7 @@ fn check_timeouts(world: &mut World) {
 
     for (run, state) in expired {
         let error = DriverError::Model(format!("tier {} timed out", state.tier));
-        fail_after_attempt(
-            world,
-            run,
-            state.tier,
-            state.epoch,
-            state.reason,
-            state.started,
-            error,
-        );
+        fail_after_attempt(world, run, state.tier, state.epoch, state.reason, state.started, error);
     }
 }
 
@@ -317,16 +302,14 @@ fn cancel_inflight(world: &mut World) {
     // （`EscalationState.resolved`），**不回查 registry**——registry 的后续
     // mutation（rebind 等）不改变「取消针对谁」。快照缺失（手插状态的
     // 测试场景）按无执行者处理：只清句柄，不虚构取消。
-    let cancels: Vec<(
-        Entity,
-        super::driver::AttemptHandle,
-        Option<Arc<dyn Driver>>,
-    )> = {
+    let cancels: Vec<(Entity, super::driver::AttemptHandle, Option<Arc<dyn Driver>>)> = {
         let mut query = world.query::<(Entity, &RunStatus, &EscalationState)>();
         query
             .iter(world)
             .filter_map(|(run, status, state)| match status {
-                RunStatus::Cancelled => state.handle.map(|h| (run, h, state.resolved.clone())),
+                RunStatus::Cancelled => state
+                    .handle
+                    .map(|h| (run, h, state.resolved.clone())),
                 _ => None,
             })
             .collect()
@@ -360,7 +343,9 @@ fn build_ctx(
         .map(|s| collect_transcript(world, s))
         .unwrap_or_default();
     let tools = agent.map(|a| collect_tools(world, a)).unwrap_or_default();
-    let last_response = world.get::<RunLastResponse>(run).and_then(|r| r.0.clone());
+    let last_response = world
+        .get::<RunLastResponse>(run)
+        .and_then(|r| r.0.clone());
 
     DriverAttemptCtx {
         run,

@@ -31,8 +31,12 @@ jobs:
       - name: Tests (rig-ecs feature tier)
         run: cargo test -p bevy_needle --features rig-ecs
       - name: default build has no rig deps (I11)
+        shell: bash
         run: |
-          cargo tree --no-default-features -e normal -p bevy_needle             | (! grep -E "rig-core|rig-ecs|reqwest|tokio|futures ") || echo "clean"
+          if cargo tree --no-default-features -e normal -p bevy_needle | grep -E "rig-core|rig-ecs|reqwest|tokio|futures"; then
+            echo "FAIL: default build pulls rig/net deps (升级计划 I11)" >&2
+            exit 1
+          fi
       - name: Build demo (feature-gated, may need system deps)
         if: matrix.os == 'ubuntu-latest'
         run: |

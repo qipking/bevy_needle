@@ -4,16 +4,13 @@
 //! `needle3_real_smoke`（third_party/needle/3.0.1/ 有发行产物时跑）。
 #![cfg(feature = "dlopen")]
 
-use bevy_needle::engine::{ENGINE_VERSION, EngineGeneration, discover_library_for};
+use bevy_needle::engine::{discover_library_for, EngineGeneration, ENGINE_VERSION};
 use bevy_needle::prelude::*;
 
 #[test]
 fn library_name_has_generation_suffix() {
     if cfg!(target_os = "macos") {
-        assert_eq!(
-            EngineGeneration::Gen3.library_file_name(),
-            "libneedle3.dylib"
-        );
+        assert_eq!(EngineGeneration::Gen3.library_file_name(), "libneedle3.dylib");
     } else if cfg!(windows) {
         assert_eq!(EngineGeneration::Gen3.library_file_name(), "libneedle3.dll");
     } else {

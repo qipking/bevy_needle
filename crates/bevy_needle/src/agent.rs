@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use bevy_ecs::prelude::*;
 
 use crate::{
-    session::{Session, spawn_session},
+    session::{spawn_session, Session},
     tool::ToolSpec,
 };
 
