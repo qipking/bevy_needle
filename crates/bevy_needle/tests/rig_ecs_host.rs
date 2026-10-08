@@ -734,7 +734,8 @@ type PendingAnswerQuery<'w, 's> = Query<
 /// B2 轨应答系统：读 world-served effect（ToolCall），**用 World 访问**
 /// 修改资源并提交 `WorldOutcome`（§29.4：只有这条轨能证明 execution
 /// semantics 真正归 rig-ecs / Bevy World）。
-fn answer_select_clip(effects: PendingAnswerQuery,
+fn answer_select_clip(
+    effects: PendingAnswerQuery,
     mut fixture: ResMut<ClipSelection>,
     mut commands: Commands,
 ) {
