@@ -6,6 +6,35 @@
 ## [Unreleased]
 
 ### Added
+- **migration verification（§29.7 任务 D；删除门 G1）**：新增
+  `docs/migration-0.2.0-to-0.3.0.md`——① 0.2.0→0.3.0 迁移说明（架构分层读法）；
+  ② `RunStatus::Escalating/Escalated` 的显式迁移表（Escalated 语义**保留**，
+  载具换为 rig-ecs `Failed(Failure::Cancelled(report))`；Escalating → 宿主
+  policy 驱动 `UsesModel` 切换；Cancelled 并入 Failed 成员——`Failure`
+  九成员为唯一转义出口）；③ 删除后的 API 替代关系表（legacy 逐项 →
+  rig-ecs 注册胶水/执行平面；整体消失清单防漏迁）；
+- **CI 覆盖升级（§28.6/§29.9 前置）**：push 触发分支补 `master`；
+  `rig` / `rig-ecs` 两档测试与 clippy 进矩阵；I11 零成本断言（
+  cargo tree 无 rig/reqwest/tokio/futures）入 CI；
+- **LocalModelOnly fail-closed（§29.2 任务 A；v28 审计 A 修正）**：
+  注册+分类绑定为同一事务（`register_local_model` / `register_remote_model`
+  取代两阶段 `insert_remote`）；SecurityGuard fail-closed 矩阵
+  （Local→allow / Remote→deny / **unclassified→deny**，默认视为 remote）；
+  E2E ×2（已登记 remote deny 回归 + unclassified deny 新增缺口的
+  fail-open 修正）；单测矩阵三类全覆盖。
+- **worker shutdown / join（§29.3 任务 B）**：stop accepting → drain /
+  discard → join worker 显式生命周期；`shutdown()` 幂等（后续 submit
+  立即以 `Transport("worker shut down")` 回执，不排队不悬挂）；`join()`
+  显式拒绝 "sender still live"（不阻塞）；Drop 只停收不 join
+  （"何时确信线程真的结束"由显式 shutdown 回答）。测试 ×4（幂等+停收 /
+  drain / join 前拒绝 / 在途解码等待交付）。
+- **G2-B2 正向 E2E（§29.4 任务 C）**：轨道修形为 rig-ecs 正典
+  world-served tool——`register_open(tool:<name>, Tool family)` + 宿主
+  系统提交 `WorldOutcome`（CONTRACT §8.3）；`register_world::<Custom>`
+  不会进广告面（Tool 家族过滤）故废弃。E2E 四方断言：World 系统真正
+  修改 World（ClipSelection）→ WorldOutcome 提交 → 结果 JSON 回喂
+  第二轮 → 内容图 `ToolResult` part 携带规范 call id
+  （`needle-call-<seq>`）。
 - **worker 唤醒事件驱动化（升级计划 §27.5 ①）**：`WaitSlot` 去 `Condvar` →
   `futures::task::AtomicWaker`；`WaitFuture::poll` 改标准两步式（取 → 注册
   waker → 复查），worker 落回原子唤醒——消除"每 poll spawn 睡眠线程推进"的

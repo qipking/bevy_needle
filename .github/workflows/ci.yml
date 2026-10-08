@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
 
 env:
@@ -24,6 +24,15 @@ jobs:
       # 测试不依赖引擎动态库（MockBackend）
       - name: Tests (no engine required)
         run: cargo test -p bevy_needle
+      # 删除门覆盖（§28.6/§29.8）：rig / rig-ecs 两档在 CI 里同跑；
+      # 默认构建零成本断言（升级计划 I11）。
+      - name: Tests (rig feature tier)
+        run: cargo test -p bevy_needle --features rig
+      - name: Tests (rig-ecs feature tier)
+        run: cargo test -p bevy_needle --features rig-ecs
+      - name: default build has no rig deps (I11)
+        run: |
+          cargo tree --no-default-features -e normal -p bevy_needle             | (! grep -E "rig-core|rig-ecs|reqwest|tokio|futures ") || echo "clean"
       - name: Build demo (feature-gated, may need system deps)
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -46,3 +55,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy (engine-free path)
         run: cargo clippy -p bevy_needle --all-targets -- -D warnings
+      # rig-ecs tier clippy（§28.3 / §29.8 G7 依据）
+      - name: clippy (rig-ecs tier)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy -p bevy_needle --all-targets --features rig-ecs -- -D warnings
