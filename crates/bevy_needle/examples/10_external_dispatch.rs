@@ -144,7 +144,11 @@ fn main() {
 type InvocationQuery<'w, 's> = Query<
     'w,
     's,
-    (Entity, &'static ToolInvocationCall, &'static ToolInvocationStatus),
+    (
+        Entity,
+        &'static ToolInvocationCall,
+        &'static ToolInvocationStatus,
+    ),
     (
         With<ToolInvocation>,
         Changed<ToolInvocationStatus>, // 只关心刚变成 Queued 的
