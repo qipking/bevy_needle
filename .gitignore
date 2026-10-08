@@ -14,3 +14,6 @@ Cargo.lock.bak
 
 # needle3 基础权重（35MB；不进 git，用 third_party/needle/3.0.1/fetch.sh 获取）
 third_party/needle/3.0.1/needle3.cact
+
+# 本机私有：cargo 家目录沙箱副本（勿提交）
+/.cargo-home

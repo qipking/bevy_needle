@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn duplicate_tier_argument_is_rejected() {
         // v14.3：[0,0] 入参自身重复 → DuplicateTierArgument（半注册反例封堵）
-        let mut registry = DriverRegistry::default();
+        let registry = DriverRegistry::default();
         let err = registry
             .precheck_register_and_bind(DriverId("x"), &[0, 0])
             .unwrap_err();

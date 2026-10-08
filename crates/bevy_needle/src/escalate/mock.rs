@@ -28,6 +28,8 @@ pub enum MockStep {
         /// 失败原因。
         error: DriverError,
     },
+    /// 挂起：submit 不回灌，直到测试显式放行（G5 取消窗口用）。
+    Pending,
 }
 
 impl MockStep {
@@ -42,6 +44,11 @@ impl MockStep {
     pub fn fail(error: DriverError) -> Self {
         MockStep::Fail { error }
     }
+
+    /// 挂起条目（submit 不回灌；测试持 [`MockDriver::release`] 放行）。
+    pub fn pending() -> Self {
+        MockStep::Pending
+    }
 }
 
 /// 脚本化 driver：`submit` 立即把脚本里的下一条结果经 bus 回灌。
@@ -52,6 +59,8 @@ pub struct MockDriver {
     cursor: Mutex<usize>,
     default: MockStep,
     cancelled: AtomicU64,
+    /// `Pending` 步骤的挂起事件（`release()` 逐条放行）。
+    held: Mutex<Vec<DriverEvent>>,
 }
 
 impl MockDriver {
@@ -69,7 +78,23 @@ impl MockDriver {
                 output: "mock done".into(),
             },
             cancelled: AtomicU64::new(0),
+            held: Mutex::new(Vec::new()),
         }
+    }
+
+    /// 放行一条挂起事件（G5 取消窗口；FIFO）。
+    ///
+    /// 返回是否真的放行了一条（`false` = 没有挂起事件）。
+    pub fn release(&self, bus: &DriverEventBus) -> bool {
+        let held = self.held.lock().expect("mock held poisoned");
+        if held.is_empty() {
+            return false;
+        }
+        let event = held[0].clone();
+        drop(held);
+        self.held.lock().expect("mock held poisoned").remove(0);
+        let _ = bus.sender().send(event);
+        true
     }
 
     /// 设置能力类别（I25：须与绑定 tier 的 target 匹配）。
@@ -121,17 +146,34 @@ impl Driver for MockDriver {
             *cursor += 1;
             step
         };
-        let outcome = match step {
-            MockStep::Succeed { output } => DriverOutcome::Succeeded { output },
-            MockStep::Fail { error } => DriverOutcome::Failed { error },
+        let event = match step {
+            MockStep::Succeed { output } => DriverEvent {
+                run: ctx.run,
+                epoch: ctx.epoch,
+                driver: self.id,
+                outcome: DriverOutcome::Succeeded { output },
+            },
+            MockStep::Fail { error } => DriverEvent {
+                run: ctx.run,
+                epoch: ctx.epoch,
+                driver: self.id,
+                outcome: DriverOutcome::Failed { error },
+            },
+            MockStep::Pending => {
+                // 挂起：不回灌，等 release()。
+                self.held.lock().expect("mock held poisoned").push(DriverEvent {
+                    run: ctx.run,
+                    epoch: ctx.epoch,
+                    driver: self.id,
+                    outcome: DriverOutcome::Succeeded {
+                        output: "released late".into(),
+                    },
+                });
+                return Ok(handle);
+            }
         };
         // 同步回灌（立即返回，不阻塞；channel 无界，send 不会失败除非接收端 drop）
-        let _ = bus.sender().send(DriverEvent {
-            run: ctx.run,
-            epoch: ctx.epoch,
-            driver: self.id,
-            outcome,
-        });
+        let _ = bus.sender().send(event);
         Ok(handle)
     }
 

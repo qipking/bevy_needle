@@ -51,7 +51,8 @@
 //! |---|---|---|
 //! | `dlopen` | ✅ | 运行时 dlopen 引擎（常规桌面流程）。关闭后 crate 不链接 libloading，引擎必须经 `with_backend` 注入（如构建期链接）。
 //! | `escalate` | ❌ | 升级**能力层**（[`crate::escalate`]）：Driver 抽象 + Coordinator + 状态机，**无 rig 依赖**，MockDriver 即可跑通升级链路。
-//! | `rig` | ❌ | rig **实现层**（[`crate::rig`]）：RigDriver 适配（AgentRun 手动步进 + 工具桥），git-pinned rig-core/rig-run + tokio。⚠️ crates.io 拒绝带 git 依赖的发布，rig 0.43 前带此 feature 的版本不可直接 publish。
+//! | `rig` | ❌ | rig **实现层**（[`crate::rig`]）：Rig 0.44 adapter（`Needle3Model` = `Model<Wire, Transport>`，经上游 `ModelAdapter` 提供 `Serve`；独立 worker）。registry 发布版，可直接 publish。
+//! | `rig-ecs` | ❌ | rig-ecs **host 层**（`rig::host`）：`Handlers::register` 模型/工具 + Agent/Grant/UsesModel 装配——升级计划 §17/§18。
 //!
 //! # MSRV
 //!

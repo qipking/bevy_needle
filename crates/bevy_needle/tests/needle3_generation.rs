@@ -2,10 +2,10 @@
 //!
 //! 验证常量/库文件名/缓存分轨/base 权重接线；真实引擎的全链冒烟在
 //! `needle3_real_smoke`（third_party/needle/3.0.1/ 有发行产物时跑）。
+#![cfg(feature = "dlopen")]
 
 use bevy_needle::engine::{discover_library_for, EngineGeneration, ENGINE_VERSION};
 use bevy_needle::prelude::*;
-use std::path::PathBuf;
 
 #[test]
 fn library_name_has_generation_suffix() {

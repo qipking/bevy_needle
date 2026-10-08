@@ -279,6 +279,28 @@ rig-ecs 承载。相应地：
 与执行规格 [`crates/bevy_needle/docs/rig-driver-升级计划.md`](crates/bevy_needle/docs/rig-driver-升级计划.md)
 （§18 上游核定 / §19 handoff 提案裁决 / §17 阶段总结）。
 
+### Rig 0.44 集成（`rig` / `rig-ecs` feature）
+
+v23 裁决已落地：Rig 0.44 registry 发布版（`rig-core`/`rig-ecs` =0.44.0），
+`Needle3Model` = `Model<Needle3Wire, Needle3Transport>`（经上游 `ModelAdapter`
+自动提供 `Serve`，不自写 `impl Serve`，也不用已删除的旧 `CompletionModel` API）。
+`rig-ecs` feature 提供 rig-ecs host（`Handlers::register` 模型/工具 +
+Agent/Grant/UsesModel 装配）；置信度门控走 rig 官方 `Intercept`/`Layer`
+（拒绝点在 tool materialise 之前）。默认构建零 rig / 零 tokio 不变。
+
+```rust,ignore
+// 最低接入（rig feature）：
+let model = bevy_needle::rig::needle3_model(Arc::new(backend), "needle3");
+
+// rig-ecs host（rig-ecs feature）：
+app.add_plugins(rig_ecs::RigPlugin::default());
+//   startup：handlers 注册模型 + 工具 → Agent(UsesModel, Grant) → spawn_run
+```
+
+验收（升级计划 §17 POC 闸门）：G1–G7 全部通过（model adapter e2e /
+rig-ecs 闭环 / 置信度门控 / LocalModelOnly / 取消+epoch / 双 run 不串话 /
+40 轮稳定）。
+
 ## 引擎获取与部署
 
 搜索顺序（`discover_library`，needle3 代际）：

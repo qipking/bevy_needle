@@ -6,6 +6,33 @@
 ## [Unreleased]
 
 ### Added
+- **breaking：Rig 0.44 适配（升级计划 v23，`rig` / `rig-ecs` feature）**：
+  - 依赖切到 registry 发布版 `rig-core =0.44.0` + `rig-ecs =0.44.0`（删除
+    git-pin 的 rig-run 前提——I13：上游已删除 rig-run，v23 禁止以其为实现
+    前提）；bevy 统一 0.19.1（rig-ecs 0.44 的 workspace 依赖精确版本段，
+    避免两个 bevy_ecs 版本并存导致 World 类型不互通）；
+  - `src/rig/` 重写为 Rig 0.44 契约面：`model.rs`（`Needle3Model` =
+    `Model<Needle3Wire, Needle3Transport>`，v23 §7.1 **禁止旧
+    `CompletionModel` API**）、`codec.rs`（纯数据转换：历史尾部判定
+    §10 / function_calls→ToolCall §6 / 工具结果数组语义 §11）、
+    `worker.rs`（独立 Needle 会话 worker，I1/I22/I27——一个 Rig Agent =
+    一个 Needle 会话 = 一个 worker，升级计划 §13）、`adapter.rs`（经上游
+    `ModelAdapter` 自动提供 `Serve`——**不自写 `impl Serve`**）、
+    `gate.rs`（置信度门控 `Intercept`：拒绝点在 tool materialise 之前，
+    §12.3 禁止伪 gate）、`host.rs`（rig-ecs host：`Handlers::register`
+    模型/工具 + Agent/Grant/UsesModel 装配）；
+  - feature 拆分：`rig-ecs = ["rig", "dep:rig-ecs"]`（宿主可选接入
+    rig-ecs 运行时；默认构建零成本不变，`cargo tree --no-default-features`
+    无 rig/reqwest/tokio/futures）；
+  - 旧 rig-run 适配层（`RigModelInbox` / `rig_step_system` / `RigDriverState`
+    / `AgentRun` 手动步进 / `RigSessionBridge` / `PortableDynamicTool` 绊线）
+    按 I13/v23 裁决删除——rig-ecs 0.44 的原生 Run/Effect/Tool batch 接管；
+  - 验收：G1（model adapter e2e 4 测试）、G2（rig-ecs host 闭环 2 测试）、
+    G3（置信度门控 4 测试）、G4（LocalModelOnly 拒绝已注册 Remote driver）、
+    G5（取消+迟到结果不复活 run）、G6（同模型双 run 不串话）、G7（40 轮
+    连续稳定）；全档 feature 回归零失败。
+
+### Added
 - **breaking：停止支持 needle2，只维护 needle3（v14.5）**：
   - `EngineGeneration` 收敛为单一 `Gen3`（枚举保留给未来代际）；
     `EngineConfig` 去掉 `with_generation`，新增 `with_base_weights`

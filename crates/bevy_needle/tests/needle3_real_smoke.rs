@@ -2,6 +2,7 @@
 //!
 //! 前提：`third_party/needle/3.0.1/{libneedle3.so,needle3.cact}` 存在
 //! （发行产物；缺失则整测跳过——CI 与无引擎环境不阻塞）。
+#![cfg(feature = "dlopen")]
 
 use bevy_needle::engine::{discover_library_for, EngineGeneration};
 use bevy_needle::ffi::FfiEngine;

@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use bevy_app::{App, Update};
+use bevy_app::App;
 use bevy_ecs::prelude::*;
 use bevy_needle::prelude::*;
 use serde_json::json;
