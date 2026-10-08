@@ -374,9 +374,19 @@ fn cancelled_run_discards_late_driver_result() {
 
     app.world_mut()
         .write_message(RunAgent::new(handles.agent, "hi"));
-    // 2 帧：run 提交 → 低置信度 → Escalating；driver submit 挂起（在途）。
-    run_frames(&mut app, 2);
-
+    // 送入 run 并循环到 Escalating（不依赖固定帧数——CI 慢机上帧数与
+    // 提交节奏抖动；Pending 步骤挂起保证该状态一旦到达就稳定停留）。
+    for _ in 0..50 {
+        run_frames(&mut app, 1);
+        let escalating = {
+            let world = app.world_mut();
+            let mut query = world.query::<&RunStatus>();
+            query.iter(world).any(|status| matches!(status, RunStatus::Escalating { .. }))
+        };
+        if escalating {
+            break;
+        }
+    }
     let run = {
         let world = app.world_mut();
         let mut query = world.query::<(Entity, &RunStatus)>();
