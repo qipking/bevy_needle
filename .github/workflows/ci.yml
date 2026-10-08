@@ -33,7 +33,10 @@ jobs:
       - name: default build has no rig deps (I11)
         shell: bash
         run: |
-          if cargo tree --no-default-features -e normal -p bevy_needle | grep -E "rig-core|rig-ecs|reqwest|tokio|futures"; then
+          # 词边界匹配：bevy 0.19.1 自身的异步池依赖（futures-lite/futures-core，
+          # 经 async-executor ← bevy_tasks）是 bevy 内部实现细节，不属于
+          # I11 的 rig/网络断言——只匹配 crate 名精确形态。
+          if cargo tree --no-default-features -e normal -p bevy_needle | grep -E "rig-core v|rig-ecs v|reqwest v|tokio v|futures v"; then
             echo "FAIL: default build pulls rig/net deps (升级计划 I11)" >&2
             exit 1
           fi

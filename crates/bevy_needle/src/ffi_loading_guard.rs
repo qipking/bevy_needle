@@ -35,12 +35,10 @@ impl LibraryGuard {
 
     /// 解析符号为裸指针（调用方负责 transmute 到正确签名，见 [`crate::ffi`]）。
     pub fn symbol(&self, name: &'static str) -> Result<*const (), NeedleError> {
-        let sym: libloading::Symbol<*const ()> =
-            unsafe { self.lib.get(name.as_bytes()) }.map_err(|source| {
-                NeedleError::MissingSymbol {
-                    symbol: name,
-                    reason: source.to_string(),
-                }
+        let sym: libloading::Symbol<*const ()> = unsafe { self.lib.get(name.as_bytes()) }
+            .map_err(|source| NeedleError::MissingSymbol {
+                symbol: name,
+                reason: source.to_string(),
             })?;
         Ok(*sym)
     }

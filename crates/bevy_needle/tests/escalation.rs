@@ -38,9 +38,7 @@ fn setup_with_script(steps: Vec<MockStep>) -> App {
     );
     {
         let mut registry = app.world_mut().resource_mut::<DriverRegistry>();
-        registry
-            .register_for_tier(Arc::new(MockDriver::new("mock").with_script(steps)), 0)
-            .expect("register driver");
+        registry.register_for_tier(Arc::new(MockDriver::new("mock").with_script(steps)), 0).expect("register driver");
     }
 
     let world = app.world_mut();
@@ -108,7 +106,9 @@ fn mock_driver_failure_with_no_more_tiers_is_failed() {
 
     // 规格 §6：试过且坏了 → Failed（不是 Escalated）
     let failed: Vec<String> = {
-        let mut q = app.world_mut().query::<(&RunStatus, Option<&RunFailure>)>();
+        let mut q = app
+            .world_mut()
+            .query::<(&RunStatus, Option<&RunFailure>)>();
         q.iter(app.world())
             .filter_map(|(status, failure)| match status {
                 RunStatus::Failed => Some(failure.map(|f| f.0.clone()).unwrap_or_default()),
@@ -116,11 +116,7 @@ fn mock_driver_failure_with_no_more_tiers_is_failed() {
             })
             .collect()
     };
-    assert_eq!(
-        failed.len(),
-        1,
-        "driver failure must fail the run: {failed:?}"
-    );
+    assert_eq!(failed.len(), 1, "driver failure must fail the run: {failed:?}");
     assert!(
         failed[0].contains("driver"),
         "failure should mention driver: {}",
@@ -200,24 +196,20 @@ fn two_tiers_first_fails_second_succeeds() {
     );
     {
         let mut registry = app.world_mut().resource_mut::<DriverRegistry>();
-        registry
-            .register_for_tier(
-                Arc::new(MockDriver::new("tier0").with_script(vec![MockStep::fail(
-                    bevy_needle::escalate::DriverError::Model("tier0 down".into()),
-                )])),
-                0,
-            )
-            .expect("register driver");
-        registry
-            .register_for_tier(
-                Arc::new(
-                    MockDriver::new("tier1")
-                        .with_capability(EscalationTarget::Remote) // I25：与 tiers[1] 匹配
-                        .with_script(vec![MockStep::succeed("tier1 saved")]),
-                ),
-                1,
-            )
-            .expect("register driver");
+        registry.register_for_tier(
+            Arc::new(MockDriver::new("tier0").with_script(vec![MockStep::fail(
+                bevy_needle::escalate::DriverError::Model("tier0 down".into()),
+            )])),
+            0,
+        ).expect("register driver");
+        registry.register_for_tier(
+            Arc::new(
+                MockDriver::new("tier1")
+                    .with_capability(EscalationTarget::Remote) // I25：与 tiers[1] 匹配
+                    .with_script(vec![MockStep::succeed("tier1 saved")]),
+            ),
+            1,
+        ).expect("register driver");
     }
 
     let world = app.world_mut();
@@ -262,6 +254,7 @@ fn two_tiers_first_fails_second_succeeds() {
     );
 }
 
+
 /// G4（升级计划 §17.4）：`LocalModelOnly` + Remote Driver 已注册
 /// → Remote tier 不可被选中（policy.allows 拒绝；§11.2/§11.3）。
 ///
@@ -292,27 +285,13 @@ fn local_model_only_refuses_registered_remote_driver() {
     );
     {
         let mut registry = app.world_mut().resource_mut::<DriverRegistry>();
-        registry
-            .register_for_tier(
-                Arc::new(
-                    MockDriver::new("mock-local").with_script(vec![MockStep::Succeed {
-                        output: "handled locally".into(),
-                    }]),
-                ),
-                0,
-            )
-            .expect("register driver");
+        registry.register_for_tier(Arc::new(MockDriver::new("mock-local").with_script(vec![MockStep::Succeed {
+            output: "handled locally".into(),
+        }])), 0).expect("register driver");
         // Remote driver 也注册了（绑定 tier 1）——但 policy 不允许 Remote。
-        registry
-            .register_for_tier(
-                Arc::new(
-                    MockDriver::new("mock-remote").with_script(vec![MockStep::Succeed {
-                        output: "REMOTE MUST NOT RUN".into(),
-                    }]),
-                ),
-                1,
-            )
-            .expect("register driver");
+        registry.register_for_tier(Arc::new(MockDriver::new("mock-remote").with_script(vec![MockStep::Succeed {
+            output: "REMOTE MUST NOT RUN".into(),
+        }])), 1).expect("register driver");
     }
 
     let world = app.world_mut();
@@ -333,7 +312,10 @@ fn local_model_only_refuses_registered_remote_driver() {
 
     let world = app.world_mut();
     let mut query = world.query::<&RunStatus>();
-    let status = *query.iter(world).next().expect("run entity exists");
+    let status = *query
+        .iter(world)
+        .next()
+        .expect("run entity exists");
     assert!(
         matches!(status, RunStatus::Completed),
         "LocalModelOnly 下 run 应由 Local driver 正常完成（Completed），不是 Escalated/Failed；得到 {status:?}"
@@ -344,6 +326,7 @@ fn local_model_only_refuses_registered_remote_driver() {
         assert!(!note.0.contains("REMOTE MUST NOT RUN"));
     }
 }
+
 
 /// G5（升级计划 §17.5）：取消 + stale epoch。
 ///
@@ -369,12 +352,12 @@ fn cancelled_run_discards_late_driver_result() {
             .with_fallback(OnlineFallback::LocalModelOnly)
             .with_tier(EscalationTarget::Local),
     );
-    let driver = Arc::new(MockDriver::new("mock").with_script(vec![MockStep::pending()]));
+    let driver = Arc::new(
+        MockDriver::new("mock").with_script(vec![MockStep::pending()]),
+    );
     {
         let mut registry = app.world_mut().resource_mut::<DriverRegistry>();
-        registry
-            .register_for_tier(Arc::clone(&driver) as Arc<dyn Driver>, 0)
-            .expect("register driver");
+        registry.register_for_tier(Arc::clone(&driver) as Arc<dyn Driver>, 0).expect("register driver");
     }
 
     let world = app.world_mut();
@@ -386,10 +369,7 @@ fn cancelled_run_discards_late_driver_result() {
         )))
         .id();
     register_tool_handler(world, "echo", |_call| Ok(ToolOutput::ok()));
-    let handles = spawn_agent(
-        world,
-        NeedleAgentSpec::new("a").with_confidence_threshold(0.5),
-    );
+    let handles = spawn_agent(world, NeedleAgentSpec::new("a").with_confidence_threshold(0.5));
     attach_tool(world, handles.agent, tool).unwrap();
 
     app.world_mut()
@@ -401,9 +381,7 @@ fn cancelled_run_discards_late_driver_result() {
         let escalating = {
             let world = app.world_mut();
             let mut query = world.query::<&RunStatus>();
-            query
-                .iter(world)
-                .any(|status| matches!(status, RunStatus::Escalating { .. }))
+            query.iter(world).any(|status| matches!(status, RunStatus::Escalating { .. }))
         };
         if escalating {
             break;

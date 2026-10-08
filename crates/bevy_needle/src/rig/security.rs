@@ -63,9 +63,7 @@ impl NeedleSecurityPolicy {
     };
 
     /// 允许云端档（宿主自担密钥防护与限流）。
-    pub const CLOUD: Self = Self {
-        remote_allowed: true,
-    };
+    pub const CLOUD: Self = Self { remote_allowed: true };
 
     /// 该类别是否被允许。
     pub const fn allows(&self, class: ModelClass) -> bool {
@@ -107,7 +105,11 @@ pub struct SecurityGuard {
 
 impl SecurityGuard {
     /// 注册+分类同事务：把 handler 实体登记为指定类别。
-    pub fn classify(&mut self, handler: bevy_ecs::entity::Entity, class: ModelClass) {
+    pub fn classify(
+        &mut self,
+        handler: bevy_ecs::entity::Entity,
+        class: ModelClass,
+    ) {
         self.classifications.insert(handler, class);
     }
 

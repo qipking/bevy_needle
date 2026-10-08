@@ -27,11 +27,11 @@
 //! legacy 关系（⑦ 冻结纪律）：本文件**不依赖** `crate::tool` /
 //! `crate::policy`（legacy Agent/Run/Tool runtime 与其策略面）。
 
-use rig_core::serve::adapters::{ModelAdapter, ToolFn};
 use rig_ecs::bus::Handlers;
+use rig_core::serve::adapters::{ModelAdapter, ToolFn};
 
-use super::NEEDLE_LABEL;
 use super::model::Needle3Model;
+use super::NEEDLE_LABEL;
 
 /// 注册键：Needle3 完成模型（`model:<label>` 语法）。
 pub fn needle_model_key(label: &str) -> String {
@@ -137,12 +137,7 @@ where
         + rig_core::wasm_compat::WasmCompatSync
         + 'static,
 {
-    let tool_fn = ToolFn::new(
-        name.to_owned(),
-        description.to_owned(),
-        parameters,
-        callback,
-    );
+    let tool_fn = ToolFn::new(name.to_owned(), description.to_owned(), parameters, callback);
     handlers.register(tool_key(name), tool_fn)
 }
 

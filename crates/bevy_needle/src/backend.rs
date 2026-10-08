@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::engine::{DEFAULT_BUFFER_SIZE, NeedleResponse};
+use crate::engine::{NeedleResponse, DEFAULT_BUFFER_SIZE};
 use crate::error::NeedleError;
 
 /// 引擎访问 trait。
@@ -86,11 +86,7 @@ impl DlopenBackend {
     /// # Errors
     /// 库加载或符号解析失败。
     pub fn open(path: &std::path::Path, buffer_size: usize) -> Result<Self, NeedleError> {
-        Self::open_with_base_weights(
-            path,
-            crate::engine::default_base_weights_path(),
-            buffer_size,
-        )
+        Self::open_with_base_weights(path, crate::engine::default_base_weights_path(), buffer_size)
     }
 
     /// 打开引擎并指定基础权重（needle3 权重不打包在库内）。
@@ -139,6 +135,7 @@ impl DlopenBackend {
         Ok(())
     }
 }
+
 
 #[cfg(feature = "dlopen")]
 impl NeedleBackend for DlopenBackend {
@@ -256,7 +253,9 @@ impl MockBackend {
     }
 
     /// 用闭包动态生成信封（可依据输入文本决定输出）。
-    pub fn dynamic(f: impl Fn(&str) -> Value + Send + Sync + 'static) -> Self {
+    pub fn dynamic(
+        f: impl Fn(&str) -> Value + Send + Sync + 'static,
+    ) -> Self {
         Self {
             script: Mutex::new(Vec::new()),
             dynamic: Some(std::sync::Arc::new(f)),
@@ -277,7 +276,8 @@ impl MockBackend {
 
     /// 统计：bind 次数（测试重绑语义）。
     pub fn bind_count(&self) -> u64 {
-        self.bind_count.load(std::sync::atomic::Ordering::Relaxed)
+        self.bind_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// 统计：complete 次数（测试轮次推进）。
@@ -288,7 +288,8 @@ impl MockBackend {
 
     /// 统计：reset 次数。
     pub fn reset_count(&self) -> u64 {
-        self.reset_count.load(std::sync::atomic::Ordering::Relaxed)
+        self.reset_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -327,7 +328,8 @@ impl NeedleBackend for MockBackend {
                 script.remove(0)
             }
         };
-        let bytes = serde_json::to_vec(&value).expect("mock envelope must serialize");
+        let bytes = serde_json::to_vec(&value)
+            .expect("mock envelope must serialize");
         NeedleResponse::parse(&bytes)
     }
 

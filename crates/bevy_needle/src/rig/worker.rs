@@ -134,6 +134,7 @@ impl WaitSlot {
             }
         }
     }
+
 }
 
 /// 一次解码作业的票（submit 的返回；opaque；I17 语义：票即 attempt）。
@@ -256,13 +257,7 @@ impl Needle3Worker {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.as_ref() {
             // 正常路径：入队成功即返回等待句柄。
-            Some(jobs)
-                if jobs
-                    .send(Job {
-                        payload,
-                        slot: Arc::clone(&slot),
-                    })
-                    .is_ok() => {}
+            Some(jobs) if jobs.send(Job { payload, slot: Arc::clone(&slot) }).is_ok() => {}
             // 已 shutdown 或通道断开：立即回执（I27，不排队不悬挂）。
             _ => {
                 drop(guard);
@@ -695,7 +690,11 @@ mod tests {
                 _max_new_tokens: u32,
                 _buffer: &mut [u8],
             ) -> Result<NeedleResponse, NeedleError> {
-                let _ = self.release_rx.lock().expect("gate").recv();
+                let _ = self
+                    .release_rx
+                    .lock()
+                    .expect("gate")
+                    .recv();
                 let body = serde_json::to_vec(&json!({
                     "type": "respond",
                     "success": true,

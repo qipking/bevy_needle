@@ -56,7 +56,9 @@ fn main() {
             ParametersBuilder::new().build(),
         )))
         .id();
-    register_tool_handler(world, "registry_ping", |_call| Ok(ToolOutput::text("pong")));
+    register_tool_handler(world, "registry_ping", |_call| {
+        Ok(ToolOutput::text("pong"))
+    });
 
     // 工具 2：External 策略 —— 不注册 handler。
     // 在 spawn 时就声明策略（也可以之后 insert 组件覆盖）。
@@ -87,12 +89,13 @@ fn main() {
         start_external_tools.after(bevy_needle::ToolDispatchSystems),
     );
     // 完成系统：倒计时归零 → 写终态。用 exclusive 系统（要 World）。
-    app.add_systems(Update, finish_external_tools.after(start_external_tools));
+    app.add_systems(
+        Update,
+        finish_external_tools.after(start_external_tools),
+    );
 
-    app.world_mut().write_message(RunAgent::new(
-        handles.agent,
-        "spawn an archer at 3,7 and ping",
-    ));
+    app.world_mut()
+        .write_message(RunAgent::new(handles.agent, "spawn an archer at 3,7 and ping"));
 
     let mut frames = 0;
     loop {
@@ -130,10 +133,7 @@ fn main() {
 
     let executed: Vec<serde_json::Value> = {
         let mut q = app.world_mut().query::<&RunExecutedResults>();
-        q.iter(app.world())
-            .next()
-            .map(|r| r.0.clone())
-            .unwrap_or_default()
+        q.iter(app.world()).next().map(|r| r.0.clone()).unwrap_or_default()
     };
     assert_eq!(executed.len(), 2, "两个调用都回喂");
     println!("✓ 混合分发完成：registry + external 各 1 次，回喂 2 条结果");
@@ -164,21 +164,22 @@ fn start_external_tools(
             .entity(entity)
             .insert((ToolInvocationStatus::Running, ExternalPending(3)));
         // 顺手演示：工具系统也能有自己的副作用（spawn 游戏实体）。
-        let kind = call
-            .0
-            .args
-            .get("kind")
-            .and_then(|v| v.as_str())
-            .unwrap_or("archer");
+        let kind = call.0.args.get("kind").and_then(|v| v.as_str()).unwrap_or("archer");
         commands.spawn((Name::new(kind.to_string()), SpawnedAt(frames.0)));
     }
 }
 
 /// External 工具的"完成"：工期归零 → 写终态（回喂数据自己定义）。
-fn finish_external_tools(world: &mut World) {
+fn finish_external_tools(
+    world: &mut World,
+) {
     let mut to_finish: Vec<(Entity, serde_json::Value)> = Vec::new();
     {
-        let mut q = world.query::<(Entity, &ToolInvocationCall, &mut ExternalPending)>();
+        let mut q = world.query::<(
+            Entity,
+            &ToolInvocationCall,
+            &mut ExternalPending,
+        )>();
         for (entity, call, mut pending) in q.iter_mut(world) {
             pending.0 = pending.0.saturating_sub(1);
             if pending.0 == 0 {

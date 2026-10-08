@@ -68,9 +68,7 @@ fn main() {
         .id();
 
     // 抽取场景的 handler 通常原样返回参数（"执行"就是"确认收到"）。
-    register_tool_handler(world, "receipt", |call| {
-        Ok(ToolOutput::json(call.args.clone()))
-    });
+    register_tool_handler(world, "receipt", |call| Ok(ToolOutput::json(call.args.clone())));
 
     let handles = spawn_agent(world, NeedleAgentSpec::new("extractor"));
     attach_tool(world, handles.agent, receipt_tool).unwrap();
@@ -120,9 +118,7 @@ fn main() {
     // 复用要点：抽取 agent 是**一次性**的（单工具、单文本）。
     // 批量抽取 = 每条文本 spawn 一个新 agent（引擎串行执行，互不干扰）；
     // 或 reset 后复用同一 agent（推荐 —— 省一次工具集重绑）。
-    app.world_mut().write_message(ResetAgent {
-        agent: handles.agent,
-    });
+    app.world_mut().write_message(ResetAgent { agent: handles.agent });
 
     assert!(extracted_for_assert.is_some());
     assert_eq!(extracted_for_assert.unwrap()["merchant"], "GreenMart");

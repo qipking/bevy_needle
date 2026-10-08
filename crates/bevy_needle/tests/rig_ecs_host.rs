@@ -23,7 +23,7 @@ use bevy_ecs::prelude::*;
 use rig_ecs::bus::Handlers;
 use rig_ecs::prelude::*;
 use rig_ecs::systems::RunCommands;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -69,9 +69,7 @@ fn volume_callback(
         }
         let percent = args.get("percent").and_then(Value::as_i64).unwrap_or(0);
         Box::pin(async move {
-            Ok(rig_core::tool::ToolOutput::json(
-                json!({ "volume_set": percent }),
-            ))
+            Ok(rig_core::tool::ToolOutput::json(json!({ "volume_set": percent })))
         })
     }
 }
@@ -123,10 +121,7 @@ fn drive_to_terminal(app: &mut App, max_attempts: u64) {
             return;
         }
         attempts += 1;
-        assert!(
-            attempts < max_attempts,
-            "run did not reach a terminal state"
-        );
+        assert!(attempts < max_attempts, "run did not reach a terminal state");
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -202,40 +197,37 @@ fn needle_model_serves_completion_effect_directly() {
     // bus 直连形态：PendingEffect(Completion) → Needle3Model → EffectOutcome。
     let mut app = App::new();
     app.add_plugins(rig_ecs::RigPlugin::default());
-    app.add_systems(
-        Startup,
-        move |mut handlers: Handlers, mut commands: Commands| {
-            handlers
-                .register(
-                    "model:needle3-direct",
-                    rig_core::serve::adapters::ModelAdapter::new(
-                        bevy_needle::rig::NEEDLE_LABEL,
-                        rig_core::driver::DynModel::from(
-                            bevy_needle::rig::needle3_model(
-                                Arc::new(MockBackend::new(vec![json!({
-                                    "type": "respond",
-                                    "success": true,
-                                    "function_calls": [],
-                                    "reasoning": "hello from needle",
-                                })])),
-                                "needle3",
-                            )
-                            .into_inner(),
-                        ),
-                    ),
-                )
-                .expect("register");
-            commands.spawn(rig_ecs::bus::PendingEffect::new(
+    app.add_systems(Startup, move |mut handlers: Handlers, mut commands: Commands| {
+        handlers
+            .register(
                 "model:needle3-direct",
-                rig_core::effect::EffectKind::Completion {
-                    request: rig_core::completion::CompletionRequest::from(vec![
-                        rig_core::message::Message::user("hello"),
-                    ]),
-                    stream: false,
-                },
-            ));
-        },
-    );
+                rig_core::serve::adapters::ModelAdapter::new(
+                    bevy_needle::rig::NEEDLE_LABEL,
+                    rig_core::driver::DynModel::from(
+                        bevy_needle::rig::needle3_model(
+                            Arc::new(MockBackend::new(vec![json!({
+                                "type": "respond",
+                                "success": true,
+                                "function_calls": [],
+                                "reasoning": "hello from needle",
+                            })])),
+                            "needle3",
+                        )
+                        .into_inner(),
+                    ),
+                ),
+            )
+            .expect("register");
+        commands.spawn(rig_ecs::bus::PendingEffect::new(
+            "model:needle3-direct",
+            rig_core::effect::EffectKind::Completion {
+                request: rig_core::completion::CompletionRequest::from(vec![
+                    rig_core::message::Message::user("hello"),
+                ]),
+                stream: false,
+            },
+        ));
+    });
     let mut attempts = 0;
     loop {
         app.update();
@@ -344,9 +336,13 @@ fn two_runs_same_model_do_not_cross_talk() {
     app.add_systems(Startup, move |mut commands: Commands| {
         let queued_model = model.clone();
         commands.queue(move |world: &mut World| {
-            let model_entity =
-                bevy_needle::rig::register_local_model(world, "needle3", queued_model, None)
-                    .expect("register");
+            let model_entity = bevy_needle::rig::register_local_model(
+                world,
+                "needle3",
+                queued_model,
+                None,
+            )
+            .expect("register");
             let agent = world
                 .spawn((
                     rig_ecs::agent::Owner("shared".to_owned()),
@@ -393,11 +389,7 @@ fn two_runs_same_model_do_not_cross_talk() {
     // 本 run 自己的 utterance**——不得包含另一 run 的 prompt / tool result，
     // 也不得是历史拼接（§10：不重放整段 history；Needle 会话在引擎内）。
     let recorded = engine_inputs.lock().expect("engine input recorder").clone();
-    assert_eq!(
-        recorded.len(),
-        2,
-        "exactly one engine call per run: {recorded:?}"
-    );
+    assert_eq!(recorded.len(), 2, "exactly one engine call per run: {recorded:?}");
     for input in &recorded {
         assert!(
             !input.contains("first") || !input.contains("second"),
@@ -432,9 +424,13 @@ fn repeated_single_turn_runs_are_stable() {
     app.add_systems(Startup, move |mut commands: Commands| {
         let queued_model = model.clone();
         commands.queue(move |world: &mut World| {
-            let model_entity =
-                bevy_needle::rig::register_local_model(world, "needle3", queued_model, None)
-                    .expect("register");
+            let model_entity = bevy_needle::rig::register_local_model(
+                world,
+                "needle3",
+                queued_model,
+                None,
+            )
+            .expect("register");
             let agent = world
                 .spawn((
                     rig_ecs::agent::Owner("loop".to_owned()),
@@ -646,11 +642,7 @@ fn confidence_gate_passes_exactly_one_tool_effect() {
         1,
         "高置信度 → ToolEffect == 1（exactly，§27.4）"
     );
-    assert_eq!(
-        callback_count.load(Ordering::SeqCst),
-        1,
-        "工具回调恰好执行一次"
-    );
+    assert_eq!(callback_count.load(Ordering::SeqCst), 1, "工具回调恰好执行一次");
 }
 
 #[test]
@@ -697,7 +689,8 @@ fn confidence_gate_never_blocks_final_response() {
     });
     let answer = await_settled_answer(&mut app);
     assert_eq!(
-        answer, "all done without tools",
+        answer,
+        "all done without tools",
         "respond 轮必须原样 settle（confidence=0.01 也不阻）"
     );
 }
@@ -735,33 +728,28 @@ fn answer_select_clip(
     mut commands: Commands,
 ) {
     for (entity, effect) in &effects {
-        let rig_core::effect::EffectKind::ToolCall { name, args } = &effect.kind else {
+        let rig_core::effect::EffectKind::ToolCall { name, args } = &effect.kind
+        else {
             continue;
         };
         if name != "select_clip" {
             continue;
         }
-        let clip_id: String = serde_json::from_str(args)
-            .ok()
-            .and_then(|value: Value| {
-                value
-                    .get("clip_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
+        let clip_id: String =
+            serde_json::from_str(args).ok().and_then(|value: Value| {
+                value.get("clip_id").and_then(Value::as_str).map(str::to_owned)
             })
             .unwrap_or_default();
         // 真正的 World 修改（资源；应用侧等价于 Query<&mut Selection> 写组件）。
         fixture.selected = Some(clip_id.clone());
         fixture.selections += 1;
-        commands
-            .entity(entity)
-            .insert(rig_ecs::bus::WorldOutcome::new(Ok(
-                rig_core::effect::Outcome::ToolResult {
-                    result: rig_core::tool::ToolResult::success(rig_core::tool::ToolOutput::json(
-                        json!({ "clipped": clip_id }),
-                    )),
-                },
-            )));
+        commands.entity(entity).insert(rig_ecs::bus::WorldOutcome::new(
+            Ok(rig_core::effect::Outcome::ToolResult {
+                result: rig_core::tool::ToolResult::success(
+                    rig_core::tool::ToolOutput::json(json!({ "clipped": clip_id })),
+                ),
+            }),
+        ));
     }
 }
 
@@ -866,7 +854,8 @@ fn world_tool_track_roundtrips_answer_and_call_id() {
     let mut found_call_id = false;
     let world = app.world_mut();
     {
-        let mut query = world.query::<&rig_ecs::agent::content::parts::ContentPart>();
+        let mut query =
+            world.query::<&rig_ecs::agent::content::parts::ContentPart>();
         for part in query.iter(world) {
             if let rig_ecs::agent::content::parts::ContentPart::ToolResult {
                 call,
@@ -953,15 +942,17 @@ fn local_model_only_forbids_registered_remote_model_selection() {
         let queued_model = model.clone();
         let remote_flag = remote_flag.clone();
         commands.queue(move |world: &mut World| {
-            let local_entity =
-                bevy_needle::rig::register_local_model(world, "needle3", queued_model, None)
-                    .expect("register local");
+            let local_entity = bevy_needle::rig::register_local_model(
+                world,
+                "needle3",
+                queued_model,
+                None,
+            )
+            .expect("register local");
             let remote_entity = bevy_needle::rig::register_remote_model(
                 world,
                 REMOTE_MODEL_KEY,
-                RemoteMock {
-                    served: remote_flag,
-                },
+                RemoteMock { served: remote_flag },
             )
             .expect("register remote");
             let agent = world
@@ -999,10 +990,7 @@ fn local_model_only_forbids_registered_remote_model_selection() {
         "本地 run 必须正常 settle（护栏不误伤）：{answers:?}"
     );
     let mut failed = world.query::<&Failed>();
-    let failure = failed
-        .iter(world)
-        .next()
-        .expect("remote run must be failed");
+    let failure = failed.iter(world).next().expect("remote run must be failed");
     let rig_ecs::agent::Failure::Cancelled(report) = &failure.0 else {
         panic!("护栏拒绝应是 Cancelled 失败：{:?}", failure.0);
     };
@@ -1030,49 +1018,41 @@ fn local_model_only_denies_unclassified_handlers_by_default() {
     let mut app = App::new();
     app.add_plugins(rig_ecs::RigPlugin::default());
     bevy_needle::rig::install_security_guard(&mut app);
-    app.add_systems(
-        Startup,
-        move |mut handlers: Handlers, mut commands: Commands| {
-            let remote_flag = remote_flag.clone();
-            // 裸注册（不经本 crate 助手）：**无分类**——fail-closed 的靶子。
-            let remote_entity = handlers
-                .register(
-                    REMOTE_MODEL_KEY,
-                    RemoteMock {
-                        served: remote_flag,
-                    },
-                )
-                .expect("raw register");
-            commands.queue(move |world: &mut World| {
-                // Run：显式选中未分类 handler。
-                let agent = world
-                    .spawn((
-                        rig_ecs::agent::Owner("bypass".to_owned()),
-                        rig_ecs::agent::Preamble(None),
-                        rig_ecs::agent::Temperature(None),
-                        rig_ecs::agent::MaxTokens(Some(64)),
-                        rig_ecs::agent::AdditionalParams(None),
-                        rig_ecs::agent::ToolChoiceSpec(None),
-                        rig_ecs::agent::Output::default(),
-                        rig_ecs::agent::DefaultMaxTurns(Some(1)),
-                        rig_ecs::agent::MaxTurns(1),
-                        rig_ecs::agent::InvalidCalls::default(),
-                        rig_ecs::agent::UsesModel(remote_entity),
-                    ))
-                    .id();
-                world.spawn_run(agent, &[], "绕过分类的问题", false, None);
-            });
-        },
-    );
+    app.add_systems(Startup, move |mut handlers: Handlers, mut commands: Commands| {
+        let remote_flag = remote_flag.clone();
+        // 裸注册（不经本 crate 助手）：**无分类**——fail-closed 的靶子。
+        let remote_entity = handlers
+            .register(
+                REMOTE_MODEL_KEY,
+                RemoteMock { served: remote_flag },
+            )
+            .expect("raw register");
+        commands.queue(move |world: &mut World| {
+            // Run：显式选中未分类 handler。
+            let agent = world
+                .spawn((
+                    rig_ecs::agent::Owner("bypass".to_owned()),
+                    rig_ecs::agent::Preamble(None),
+                    rig_ecs::agent::Temperature(None),
+                    rig_ecs::agent::MaxTokens(Some(64)),
+                    rig_ecs::agent::AdditionalParams(None),
+                    rig_ecs::agent::ToolChoiceSpec(None),
+                    rig_ecs::agent::Output::default(),
+                    rig_ecs::agent::DefaultMaxTurns(Some(1)),
+                    rig_ecs::agent::MaxTurns(1),
+                    rig_ecs::agent::InvalidCalls::default(),
+                    rig_ecs::agent::UsesModel(remote_entity),
+                ))
+                .id();
+            world.spawn_run(agent, &[], "绕过分类的问题", false, None);
+        });
+    });
 
     drive_to_terminal(&mut app, 300);
 
     let world = app.world_mut();
     let mut failed = world.query::<&Failed>();
-    let failure = failed
-        .iter(world)
-        .next()
-        .expect("unclassified run must fail");
+    let failure = failed.iter(world).next().expect("unclassified run must fail");
     let rig_ecs::agent::Failure::Cancelled(report) = &failure.0 else {
         panic!("fail-closed 拒绝应是 Cancelled 失败：{:?}", failure.0);
     };
@@ -1146,9 +1126,13 @@ fn cancel_run_mid_flight_discards_late_completion() {
     app.add_systems(Startup, move |mut commands: Commands| {
         let queued_model = model.clone();
         commands.queue(move |world: &mut World| {
-            let model_entity =
-                bevy_needle::rig::register_local_model(world, "needle3", queued_model, None)
-                    .expect("register");
+            let model_entity = bevy_needle::rig::register_local_model(
+                world,
+                "needle3",
+                queued_model,
+                None,
+            )
+            .expect("register");
             let agent = world
                 .spawn((
                     rig_ecs::agent::Owner("cancel".to_owned()),

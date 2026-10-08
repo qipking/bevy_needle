@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use bevy_needle::engine::NeedleResponse;
 use bevy_needle::rig::needle3_model;
-use rig_core::completion::CompletionRequest;
 use rig_core::completion::message::{AssistantContent, Message};
+use rig_core::completion::CompletionRequest;
 use serde_json::json;
 
 use futures_now::block_on_first_poll;
@@ -92,11 +92,7 @@ fn unary_respond_completion_roundtrip() {
 #[test]
 fn unary_call_completion_maps_tool_calls() {
     let model = needle3_model(
-        mock_with(vec![call_envelope(
-            "APP.change_pitch",
-            json!({"semitones": -2}),
-            0.94,
-        )]),
+        mock_with(vec![call_envelope("APP.change_pitch", json!({"semitones": -2}), 0.94)]),
         "needle3",
     );
     let request = CompletionRequest::from(vec![Message::user("降两个半音")]);
@@ -118,7 +114,10 @@ fn unary_call_completion_maps_tool_calls() {
 #[test]
 fn tool_result_input_reaches_worker_verbatim() {
     // 工具结果数组按 §11 官方语义整体回喂给引擎。
-    let model = needle3_model(mock_with(vec![respond_envelope("ok", 0.9)]), "needle3");
+    let model = needle3_model(
+        mock_with(vec![respond_envelope("ok", 0.9)]),
+        "needle3",
+    );
     let id = rig_core::message::CallId::from_wire("needle-local-0");
     let name = rig_core::message::ToolName::new("APP.change_pitch").expect("name");
     // 历史形态对齐真实多轮：先用户轮，再工具结果轮（末条判定取工具结果）。
@@ -162,6 +161,7 @@ fn stream_degrades_to_single_terminal_frame() {
     let _ = last;
 }
 
+
 /// I18 v27 ③：call_id 跨回复唯一——同一 model 连续两轮 call，两轮的 call id
 /// 必须（a）同值往返在各自回复里、（b）互不碰撞（per-model 单调序 vs 旧
 /// per-reply 索引会碰撞）。
@@ -178,7 +178,8 @@ fn call_ids_are_unique_across_replies() {
     let mut ids = Vec::new();
     for prompt in ["one", "two", "three"] {
         let request = CompletionRequest::from(vec![Message::user(prompt)]);
-        let response = block_on_first_poll(model.call(request)).expect("completion");
+        let response =
+            block_on_first_poll(model.call(request)).expect("completion");
         for part in &response.choice {
             if let AssistantContent::ToolCall(call) = part {
                 ids.push(call.id.wire().to_string());
@@ -187,12 +188,6 @@ fn call_ids_are_unique_across_replies() {
     }
     assert_eq!(ids.len(), 3);
     // 单调递增且互不相同（旧实现三轮都是 needle-local-0 —— 碰撞）。
-    assert!(
-        ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2],
-        "{ids:?}"
-    );
-    assert!(
-        ids.iter().all(|id| id.starts_with("needle-call-")),
-        "{ids:?}"
-    );
+    assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2], "{ids:?}");
+    assert!(ids.iter().all(|id| id.starts_with("needle-call-")), "{ids:?}");
 }
