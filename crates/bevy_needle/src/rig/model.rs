@@ -59,6 +59,11 @@ pub struct NeedleFrame(pub(crate) String);
 pub struct Needle3Wire {
     /// 引擎代际标签（`describe().model`；诊断面）。
     label: Arc<str>,
+    /// 规范 call_id 序列（I18 v27）：model 实例级单调计数——Needle 从不发
+    /// call id，本 wire 的解码器按此生成 `needle-call-<seq>`，生成一次、
+    /// 两侧同值、跨回复/跨 run 不碰撞（run 级唯一的实现形态）。
+    /// Clone 共享同一计数器（Rig 每次 call 都 clone wire）。
+    call_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Needle3Wire {
@@ -66,6 +71,7 @@ impl Needle3Wire {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: Arc::from(label.into().as_str()),
+            call_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
@@ -151,7 +157,9 @@ impl Wire for Needle3Wire {
     }
 
     fn decoder<'id>(&self) -> Self::Decoder<'id> {
-        NeedleDecoder
+        NeedleDecoder {
+            call_seq: Arc::clone(&self.call_seq),
+        }
     }
 
     fn reassembler(&self) -> Self::Reassembler {
@@ -160,8 +168,13 @@ impl Wire for Needle3Wire {
 }
 
 /// Needle 解码器：单帧信封 → completion writer。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NeedleDecoder;
+///
+/// 持 model 实例级 call_id 计数器（I18 v27：单一 mint 点在
+/// [`super::codec::call_id`]，两侧同值）。
+#[derive(Debug, Default, Clone)]
+pub struct NeedleDecoder {
+    call_seq: Arc<std::sync::atomic::AtomicU64>,
+}
 
 impl<'id> Decoder<'id, Completion, NeedleFrame> for NeedleDecoder {
     type Event = NeedleEvent;
@@ -189,10 +202,11 @@ impl<'id> Decoder<'id, Completion, NeedleFrame> for NeedleDecoder {
                 let arguments = serde_json::to_value(&call.arguments)
                     .map_err(|err| ProviderError::Response(format!("needle call arguments: {err}")))?;
                 // `Out::whole`：单步开-写-收；provider item 为 Null（无原生项）。
+                // call id 经 codec::call_id 单点 mint（I18 v27）。
                 out.whole(
                     index,
                     Block::Call {
-                        id: CallId::from_wire(format!("needle-local-{index}")),
+                        id: CallId::from_wire(super::codec::call_id(&self.call_seq)),
                         name,
                     },
                     serde_json::Value::Null,
@@ -316,7 +330,8 @@ fn single_frame(
 /// `raw` 是信封原文（§15：confidence/reasoning/tps 全在 `raw` 可取）；
 /// `origin` 报 `needle` provider；usage 为空（引擎不报 token）。
 pub fn envelope_to_completion(response: NeedleResponse) -> CompletionResponse {
-    let choice = codec::choice_from_envelope(&response);
+    let seq = std::sync::atomic::AtomicU64::new(0);
+    let choice = codec::choice_from_envelope(&response, &seq);
     let raw = serde_json::to_value(&response).unwrap_or(json!({}));
     let mut origin = rig_core::message::Origin::new("needle.complete", "needle", "needle3");
     origin.response_id = None;

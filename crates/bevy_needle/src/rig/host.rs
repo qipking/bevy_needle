@@ -1,33 +1,34 @@
-//! rig-ecs host：把 bevy_needle 的 Needle3 / 工具管线接进 rig-ecs（升级计划
-//! §17/§18；`rig-ecs` feature，POC 闸门 G2 的落点）。
+//! rig-ecs host：把 Needle3 / 工具管线接进 rig-ecs（升级计划 §17/§18/§27.3；
+//! `rig-ecs` feature，G2 闸门落点）。
 //!
 //! ```text
 //! rig_ecs::RigPlugin（上游 bus/agent 运行时）
 //!      ↓
-//! Handlers::register("model:needle3", ModelAdapter::new(label, Needle3Model))
+//! Handlers::register("model:needle3", Layered(ModelAdapter(Needle3Model), ConfidenceGate?))
 //!      ↓
-//! Handlers::register(tool_key, ToolFn)（每个 bevy_needle ToolSpec 一把）
+//! G2-B 双轨（§27.3）：
+//!   B1 纯工具轨   Handlers::register(tool:<name>, ToolFn)     ← register_tool_fn
+//!   B2 World 工具轨 Handlers::register_world(tool:<name>, E)  ← register_world_tool
 //!      ↓
 //! Agent（Owner/Preamble/UsesModel/Grant…）+ spawn_run
 //!      ↓
 //! rig-ecs 原生 Run/Turn/Effect/Materialise（升级计划 §19：不再自建 AgentRun）
 //! ```
 //!
-//! 工具执行边界（I3）：rig-ecs 的 `ToolFn` 回调**直接调用 bevy_needle 的
-//! `ToolHandlerFn`**（纯函数，无 World 访问），结果进 rig-ecs 的 tool batch
-//! 回喂路径。这不违反 I3——bevy_needle 的 I3 是「rig async 回调不得触碰
-//! `&mut World`/ECS 实体」，而 `ToolHandlerFn` 是宿主在 `ToolHandlers` 里
-//! 注册的纯函数（与 `dispatch_registered_tool_calls` 执行的是同一函数表）。
+//! 工具执行边界（§27.3 硬禁止清单）：
 //!
-//! 世界效果（编辑器状态变更）仍由应用侧的 `ToolCallCompleted` 观察者执行
-//! （bevy_needle 现有约定），或经 `register_world` 的 `WorldEffect` 接入。
-
-use std::sync::Arc;
+//! - `ToolFn` / async callback **直接拿 `&mut World`** —— 禁止。本模块的
+//!   B1 轨不触碰 World（纯函数闭包）；
+//! - callback **直接调用旧 `ToolHandlerFn`**（legacy `crate::tool` 函数表）
+//!   —— 禁止。前一版 host 曾经伪造 `ToolCall { run: PLACEHOLDER, call_id:
+//!   "" }` 去借道 legacy 分发，这正是 §27.3 点名的同类违规，已删除。
+//!   B1 轨是宿主直注的 rig 原生闭包；B2 轨走 `Asked<E>` / `Answer<E>`。
+//!
+//! legacy 关系（⑦ 冻结纪律）：本文件**不依赖** `crate::tool` /
+//! `crate::policy`（legacy Agent/Run/Tool runtime 与其策略面）。
 
 use rig_ecs::bus::Handlers;
 use rig_core::serve::adapters::{ModelAdapter, ToolFn};
-
-use crate::tool::ToolSpec;
 
 use super::model::Needle3Model;
 use super::NEEDLE_LABEL;
@@ -37,14 +38,15 @@ pub fn needle_model_key(label: &str) -> String {
     format!("model:{label}")
 }
 
-/// 注册键：bevy_needle 工具（`tool:<name>` 语法）。
+/// 注册键：工具（`tool:<name>` 语法；canonical call key）。
 pub fn tool_key(name: &str) -> String {
     format!("tool:{name}")
 }
 
 /// 注册 Needle3 完成模型为 rig-ecs handler。
 ///
-/// 返回 handler 实体（Agent 的 `UsesModel` 目标）。
+/// `gate` 是可选的置信度门控 Layer（`after` 拒绝，拒绝点在 tool
+/// materialise 之前——§27.4）。返回 handler 实体（Agent 的 `UsesModel` 目标）。
 ///
 /// # Errors
 /// [`rig_core::error::ErrorReport`]——键被其它 family 占用等 registry 冲突。
@@ -54,9 +56,10 @@ pub fn register_needle_model(
     model: Needle3Model,
     gate: Option<super::gate::ConfidenceGate>,
 ) -> Result<bevy_ecs::entity::Entity, rig_core::error::ErrorReport> {
-    let adapter = ModelAdapter::new(NEEDLE_LABEL, rig_core::driver::DynModel::from(model.into_inner()));
-    // 置信度门控是 handler 上的 Layer（Rig 0.44 官方 hook；拒绝点在
-    // tool materialise 之前——升级计划 §12.3）。
+    let adapter = ModelAdapter::new(
+        NEEDLE_LABEL,
+        rig_core::driver::DynModel::from(model.into_inner()),
+    );
     let handler = match gate {
         Some(gate) => rig_core::serve::ErasedHandler::new(adapter).layered(gate),
         None => rig_core::serve::ErasedHandler::new(adapter),
@@ -64,104 +67,78 @@ pub fn register_needle_model(
     handlers.register(needle_model_key(label), handler)
 }
 
-/// 把 bevy_needle 工具面注册为 rig-ecs 工具 handler。
+/// G2-B1 纯工具轨：宿主直注的 rig 原生工具。
 ///
-/// 每个 `ToolSpec` 注册一把 `ToolFn`（name/description/parameters 直接
-/// 映射，§5 协议 1:1）；回调执行 `ToolHandlers` 里的纯函数 handler——
-/// 与 bevy_needle 内置分发同一函数表，无第二份注册表（§8.1）。
-/// 未注册 handler 的工具回调返回「必须由宿主处理」的明确错误。
+/// `callback` 是**纯函数**语义（不得触碰 `&mut World` / ECS 实体，§27.3
+/// 硬禁止第一条）；`ToolFn` 是 rig 的官方 runtime-defined tool，
+/// name/description/parameters 与模型广告面同源（无第二份 schema 表）。
 ///
-/// 返回 handler 实体（Agent 的 `Grant` 目标，注册顺序即广告顺序）。
+/// HRTB 约束与上游 [`ToolCallback`] 的 blanket-for-`Fn` 一致——普通
+/// 闭包（捕获 `Arc`/无捕获）都满足。
 ///
-/// # Errors
-/// [`rig_core::error::ErrorReport`]——registry 冲突。
-
-/// bevy_needle 工具 handler 的 rig 侧回调（I3）。
+/// 返回 handler 实体（Agent 的 `Grant` 目标）。
 ///
-/// 闭包捕获 `Arc` 化的函数表（clone 廉价、只读），因此是 `Fn`——
-/// `ToolCallback` 的 blanket-for-`Fn` 自动成立（与上游 layer/tests.rs 同形）。
-#[derive(Clone)]
-struct BevyToolCallback {
-    name: String,
-    handler: Option<crate::tool::ToolHandlerFn>,
-}
-
-/// HRTB 适配：把具体回调提升为 `for<'a> Fn(&'a mut ToolContext, Value)`。
-///
-/// 泛型参数让每个 `'a` 独立实例化；闭包体只做 clone 与 spawn future。
-fn make_tool_callback(
-    state: BevyToolCallback,
-) -> impl for<'a> Fn(
-    &'a mut rig_core::tool::ToolContext,
-    serde_json::Value,
-) -> rig_core::wasm_compat::WasmBoxedFuture<
-    'a,
-    Result<rig_core::tool::ToolOutput, rig_core::tool::ToolExecutionError>,
-> + WasmCompatSend2 {
-    move |_context: &mut rig_core::tool::ToolContext, args: serde_json::Value| {
-        let state = state.clone();
-        Box::pin(async move { state.run(args).await })
-    }
-}
-
-impl BevyToolCallback {
-    /// 执行一次调用（clone 后进入 async，`Fn` 语义）。
-    async fn run(
-        self,
-        args: serde_json::Value,
-    ) -> Result<rig_core::tool::ToolOutput, rig_core::tool::ToolExecutionError> {
-        match self.handler {
-            Some(function) => {
-                let call = crate::tool::ToolCall {
-                    run: bevy_ecs::entity::Entity::PLACEHOLDER,
-                    tool: bevy_ecs::entity::Entity::PLACEHOLDER,
-                    name: self.name.clone(),
-                    call_id: String::new(),
-                    args,
-                };
-                match function(&call) {
-                    Ok(output) => Ok(rig_core::tool::ToolOutput::json(output.value)),
-                    Err(error) => Err(rig_core::tool::ToolExecutionError::other(error.message)),
-                }
-            }
-            None => Err(rig_core::tool::ToolExecutionError::other(format!(
-                "tool `{}` has no bevy_needle handler; register one via \
-                 bevy_needle::register_tool_handler",
-                self.name
-            ))),
-        }
-    }
-}
-
-/// `WasmCompatSend` 的短别名（wasm 约束面）。
-use rig_core::wasm_compat::WasmCompatSend as WasmCompatSend2;
-
-/// 把 bevy_needle 工具面注册为 rig-ecs 工具 handler（见模块级文档）。
-///
-/// 每个 `ToolSpec` 注册一把 `ToolFn`（name/description/parameters 直接
-/// 映射，升级计划 §5 协议 1:1）；回调执行 `ToolHandlers` 里的纯函数
-/// handler——与 bevy_needle 内置分发同一函数表，无第二份注册表（§8.1）。
-/// 未注册 handler 的工具回调返回「必须由宿主处理」的明确错误。
-///
-/// 返回 handler 实体（Agent 的 `Grant` 目标，注册顺序即广告顺序）。
+/// [`ToolCallback`]: rig_core::serve::adapters::ToolCallback
 ///
 /// # Errors
 /// [`rig_core::error::ErrorReport`]——registry 冲突。
-pub fn register_tool_specs(
+pub fn register_tool_fn<F>(
     handlers: &mut Handlers<'_, '_>,
-    specs: Vec<ToolSpec>,
-    tool_handlers: &crate::tool::ToolHandlers,
-) -> Result<Vec<bevy_ecs::entity::Entity>, rig_core::error::ErrorReport> {
-    let mut entities = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let name = spec.name.clone();
-        let handler = tool_handlers.get(&name).cloned();
-        let description = spec.description.clone();
-        let callback = make_tool_callback(BevyToolCallback { name, handler });
-        let tool_fn = ToolFn::new(spec.name.clone(), description, spec.parameters.clone(), callback);
-        entities.push(handlers.register(tool_key(&spec.name), tool_fn)?);
-    }
-    Ok(entities)
+    name: &str,
+    description: &str,
+    parameters: serde_json::Value,
+    callback: F,
+) -> Result<bevy_ecs::entity::Entity, rig_core::error::ErrorReport>
+where
+    F: for<'a> std::ops::Fn(
+            &'a mut rig_core::tool::ToolContext,
+            serde_json::Value,
+        ) -> rig_core::wasm_compat::WasmBoxedFuture<
+            'a,
+            Result<rig_core::tool::ToolOutput, rig_core::tool::ToolExecutionError>,
+        > + rig_core::wasm_compat::WasmCompatSend
+        + rig_core::wasm_compat::WasmCompatSync
+        + 'static,
+{
+    let tool_fn = ToolFn::new(name.to_owned(), description.to_owned(), parameters, callback);
+    handlers.register(tool_key(name), tool_fn)
+}
+
+/// G2-B2 World 工具轨：World 效果必须走 rig-ecs 的 World handler
+/// （§27.3 硬第二条——`Asked<E> → Bevy system（可 Query<&mut World>）→
+/// `Answer<E>` → Rig`，execution semantics 归 rig-ecs）。
+///
+/// `E` 是宿主定义的 [`WorldEffect`]（`CustomEffect`：`]world`）——
+/// dispatch 落到 effect 实体上成为 `Asked<E>`；宿主系统读它、写 `Answer<E>`。
+///
+/// 定义样板（应用侧）：
+///
+/// ```ignore
+/// #[derive(serde::Serialize, serde::Deserialize)]
+/// struct SelectClip { clip_id: String }
+/// impl rig_core::effect::CustomEffect for SelectClip {
+///     const KIND: &'static str = "bevy_needle.tool:select_clip";
+///     type Answer = serde_json::Value;
+/// }
+///
+///  // 注册（startup）+ 应答（用户系统，可用 World 访问）：
+/// bevy_needle::rig::register_world_tool::<SelectClip>(handlers, "select_clip")?;
+/// //   effect 实体上出现 Asked<SelectClip> → 系统读它 → insert(Answer(v))
+/// ```
+///
+/// [`WorldEffect`]: rig_ecs::bus::WorldEffect
+///
+/// # Errors
+/// [`rig_core::error::ErrorReport`]——registry 冲突。
+pub fn register_world_tool<E>(
+    handlers: &mut Handlers<'_, '_>,
+    name: &str,
+) -> Result<bevy_ecs::entity::Entity, rig_core::error::ErrorReport>
+where
+    E: rig_ecs::bus::WorldEffect,
+{
+    // 显式 turbofish：`register_world` 的 E 无法从返回值推导。
+    handlers.register_world::<E>(tool_key(name))
 }
 
 /// Agent 装配输入（§17/§18：薄插件的数据面）。
@@ -183,7 +160,10 @@ pub struct AgentSpec<'a> {
 ///
 /// 返回 agent 实体；宿主用 `world.spawn_run(agent, &[], prompt, false, None)`
 /// 发起运行。
-pub fn spawn_agent(commands: &mut bevy_ecs::system::Commands, spec: AgentSpec<'_>) -> bevy_ecs::entity::Entity {
+pub fn spawn_agent(
+    commands: &mut bevy_ecs::system::Commands,
+    spec: AgentSpec<'_>,
+) -> bevy_ecs::entity::Entity {
     let agent = commands
         .spawn((
             rig_ecs::agent::Owner(spec.owner.to_owned()),
@@ -201,73 +181,10 @@ pub fn spawn_agent(commands: &mut bevy_ecs::system::Commands, spec: AgentSpec<'_
         .id();
     // Grant 链接是 ChildOf(agent) 的关系组件（上游 `agent_with_tools` 同形）。
     for tool in spec.tools {
-        commands.spawn((rig_ecs::agent::Grant(tool), bevy_ecs::hierarchy::ChildOf(agent)));
+        commands.spawn((
+            rig_ecs::agent::Grant(tool),
+            bevy_ecs::hierarchy::ChildOf(agent),
+        ));
     }
     agent
-}
-
-/// 便捷：从 World 一次性装配（注册 + Agent）。
-///
-/// # Errors
-/// [`rig_core::error::ErrorReport`]——registry 冲突。
-pub fn assemble_default_agent(
-    world: &mut bevy_ecs::world::World,
-    model: Needle3Model,
-    owner: &str,
-) -> Result<bevy_ecs::entity::Entity, rig_core::error::ErrorReport> {
-    // 先取快照（工具面在 EngineSync 已重建），再进 Handlers 闭包。
-    let mut names: Vec<String> = {
-        let mut query = world.query::<&ToolSpec>();
-        query
-            .iter(world)
-            .map(|spec| spec.name.clone())
-            .collect::<Vec<_>>()
-    };
-    names.sort();
-    let specs: Vec<ToolSpec> = names
-        .into_iter()
-        .filter_map(|name| {
-            let mut query = world.query::<&ToolSpec>();
-            query.iter(world).find(|spec| spec.name == name).cloned()
-        })
-        .collect();
-    let tool_handlers = world.resource::<crate::tool::ToolHandlers>().clone();
-    let policy = Arc::new(std::sync::Mutex::new(
-        world.resource::<crate::policy::EscalationPolicy>().clone(),
-    ));
-    let mut agent = None;
-    let registration: Result<Result<(), rig_core::error::ErrorReport>, rig_core::error::ErrorReport> =
-        Handlers::with(world, |handlers| {
-        let model_entity = match register_needle_model(
-            handlers,
-            NEEDLE_LABEL,
-            model,
-            Some(super::gate::ConfidenceGate::new(Arc::clone(&policy))),
-        ) {
-            Ok(entity) => entity,
-            Err(report) => return Err(report),
-        };
-        let tools = match register_tool_specs(handlers, specs, &tool_handlers) {
-            Ok(tools) => tools,
-            Err(report) => return Err(report),
-        };
-        agent = Some((model_entity, tools));
-        Ok::<(), rig_core::error::ErrorReport>(())
-    });
-    // Agent 装配在闭包外（闭包期间 world 被 Handlers 独占借用）。
-    registration??;
-    let (model_entity, tools) = agent.expect("agent parts set by the closure above");
-    let mut commands = world.commands();
-    let agent = spawn_agent(
-        &mut commands,
-        AgentSpec {
-            owner,
-            preamble: None,
-            model: model_entity,
-            tools,
-            max_turns: 8,
-        },
-    );
-    world.flush();
-    Ok(agent)
 }

@@ -123,13 +123,17 @@ pub fn tool_results_input(results: &[ToolResultContent]) -> Result<String, serde
     serde_json::to_string(&items)
 }
 
-/// `NeedleResponse` → 规范 assistant 内容（§6）。
+/// `NeedleResponse` → 规范 assistant 内容（§6；I18 v27）。
 ///
-/// `call` 信封 → 每个 function_call 一个 ToolCall 块（call id 由 adapter 侧
-/// mint 为 `needle-local-{index}`，Rig 侧 `CallId::from_wire` 在空 id 时发
-/// rig 本地 id——两层 mint 不会冲突，因为 Needle 从不发 call id）；
-/// `respond` 信封 → 文本块（reasoning 有则先落 reasoning 文本）。
-pub fn choice_from_envelope(response: &NeedleResponse) -> Vec<rig_core::message::AssistantContent> {
+/// `call` 信封 → 每个 function_call 一个 ToolCall 块。call id 的**唯一
+/// mint 点**在本函数：Needle 从不发 call id，adapter 解码层按 model
+/// 实例级单调序生成 `needle-call-<seq>`——生成一次、两侧同值、执行前
+/// 不得重铸（I18 v27）。`seq` 由调用方传入（wire 解码器持有 model 级
+/// `AtomicU64`，保证跨轮次/跨 run 不碰撞）。
+pub fn choice_from_envelope(
+    response: &NeedleResponse,
+    seq: &std::sync::atomic::AtomicU64,
+) -> Vec<rig_core::message::AssistantContent> {
     use rig_core::message::AssistantContent;
     let mut choice = Vec::new();
     if let Some(reasoning) = &response.reasoning {
@@ -141,11 +145,7 @@ pub fn choice_from_envelope(response: &NeedleResponse) -> Vec<rig_core::message:
                 |_| rig_core::message::ToolName::new(format!("needle-invalid-{index}"))
                     .expect("non-empty placeholder"),
             );
-            choice.push(AssistantContent::tool_call(
-                format!("needle-local-{index}"),
-                name,
-                call.arguments.clone(),
-            ));
+            choice.push(AssistantContent::tool_call(call_id(seq), name, call.arguments.clone()));
         }
         return choice;
     }
@@ -154,6 +154,13 @@ pub fn choice_from_envelope(response: &NeedleResponse) -> Vec<rig_core::message:
         choice.push(AssistantContent::text(text));
     }
     choice
+}
+
+/// 规范 call id 的唯一命名点（I18 v27）：`needle-call-<seq>`，model 实例级
+/// 单调序——run 级唯一的实现形态（同一 model 的多个 run 也互不碰撞）。
+pub fn call_id(seq: &std::sync::atomic::AtomicU64) -> String {
+    let seq = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("needle-call-{seq}")
 }
 
 #[cfg(test)]

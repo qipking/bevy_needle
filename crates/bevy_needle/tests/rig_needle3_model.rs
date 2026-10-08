@@ -160,3 +160,34 @@ fn stream_degrades_to_single_terminal_frame() {
     let last = items.last().expect("last").as_ref().expect("ok");
     let _ = last;
 }
+
+
+/// I18 v27 ③：call_id 跨回复唯一——同一 model 连续两轮 call，两轮的 call id
+/// 必须（a）同值往返在各自回复里、（b）互不碰撞（per-model 单调序 vs 旧
+/// per-reply 索引会碰撞）。
+#[test]
+fn call_ids_are_unique_across_replies() {
+    let model = needle3_model(
+        mock_with(vec![
+            call_envelope("APP.a", json!({}), 0.9),
+            call_envelope("APP.b", json!({}), 0.9),
+            call_envelope("APP.c", json!({}), 0.9),
+        ]),
+        "needle3",
+    );
+    let mut ids = Vec::new();
+    for prompt in ["one", "two", "three"] {
+        let request = CompletionRequest::from(vec![Message::user(prompt)]);
+        let response =
+            block_on_first_poll(model.call(request)).expect("completion");
+        for part in &response.choice {
+            if let AssistantContent::ToolCall(call) = part {
+                ids.push(call.id.wire().to_string());
+            }
+        }
+    }
+    assert_eq!(ids.len(), 3);
+    // 单调递增且互不相同（旧实现三轮都是 needle-local-0 —— 碰撞）。
+    assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2], "{ids:?}");
+    assert!(ids.iter().all(|id| id.starts_with("needle-call-")), "{ids:?}");
+}

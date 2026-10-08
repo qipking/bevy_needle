@@ -67,6 +67,15 @@
 //! 时经 `finalize_escalations` 以 `Escalated` 正常收尾（不是失败）。`Failed`
 //! 只留给引擎/调度错误与「试过且坏了」的 driver 失败。
 
+// ── legacy runtime（temporary migration fallback，升级计划 §26.4 / §27.5 ⑦）────
+//
+// 🧊 **冻结纪律（自本提交起生效）**：
+// ❌ 不再给本区模块增加新功能
+// ❌ 不再修其业务语义（bug-fix 仅限防悬挂/防 panic 的安全线）
+// ❌ 新代码不得依赖（`src/rig/` 已零依赖本区——审计见 CI 断言 TODO）
+//
+// 删除门（§26.7 五项）全绿后才允许整体移除；migration verification
+// （RunStatus::Escalating / Escalated 的迁移说明）未完成前保持存在。
 pub mod agent;
 pub mod app;
 pub mod backend;

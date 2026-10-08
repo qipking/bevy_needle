@@ -1,46 +1,49 @@
-//! 置信度门控（升级计划 §12；`rig` feature）。
+//! 置信度门控（升级计划 §12 / §27.4；`rig` feature）。
 //!
 //! Rig 0.44 的官方 policy hook 是 [`rig_core::serve::Intercept`]：
 //! `after` 阶段拿到 handler 的答案（`Outcome::Completion`），在**工具
 //! materialise 之前**给出 `Verdict`——低置信度的回复被 `Replace(Err(Denied))`
 //! 拒绝，调用不执行（§12.3「禁止伪 gate」：拒绝点在 tool materialise 之前，
-//! 保证 `low confidence → zero tool execution`）。
+//! 保证 `low confidence → zero tool execution`——e2e 验收看 effect 计数，
+//! §27.4）。
 //!
-//! 与 bevy_needle 原生 gate 的关系：原生 gate（`app.rs` 的
-//! `EscalationPolicy::below_threshold`）在 Needle 主管线上执行；本 gate 在
-//! rig-ecs 路径上执行（同一 `EscalationPolicy` 数据源，语义一致）。门控
-//! 只约束「有 function_calls 的轮」——respond 轮不参与（与原生约定一致）。
+//! 门限来源（§26.2 落地）：置信度阈值属于 **Rig 执行策略**，不属
+//! `NeedleSecurityPolicy`；本 gate 在 handler 注册时拿到具体阈值
+//! （per-model，宿主决定全局/per-agent），**不依赖 legacy 的
+//! `EscalationPolicy`**（⑦ legacy 冻结纪律：新代码不依赖 legacy）。
+//! bevy_needle 的 legacy 管线保留它自己的 gate（temporary migration
+//! fallback，§26.4），两边不是同一个 gate。
 //!
-//! 线程面：`Intercept` 是 `WasmCompatSend + Sync`；`EscalationPolicy` 经
-//! `Arc<Mutex<>>` 共享（宿主在运行期可改字段，读侧拿快照）。
-
-use std::sync::{Arc, Mutex};
+//! 门控只约束「有 function_calls 的轮」——respond 轮不参与（§27.4：
+//! `final response 不得被 confidence gate 阻塞`）。
+//!
+//! 线程面：`Intercept` 是 `WasmCompatSend + Sync`；阈值是构造期字段。
 
 use rig_core::completion::CompletionResponse;
 use rig_core::effect::{EffectId, EffectKind, Outcome};
 use rig_core::error::ErrorReport;
 use rig_core::serve::{Decision, Intercept, Verdict};
 
-use crate::policy::EscalationPolicy;
-
 /// 门控层名（记录/回放语义）。
 pub const GATE_LAYER: &str = "needle-confidence";
-
-/// 共享策略槽（宿主可运行期改写）。
-pub type SharedPolicy = Arc<Mutex<EscalationPolicy>>;
 
 /// 置信度门控 Intercept。
 ///
 /// `after`：`Outcome::Completion` 且 `raw.confidence` 存在且低于门限
 /// → `Verdict::Replace(Err(Denied))`；否则 `Keep`。
 pub struct ConfidenceGate {
-    policy: SharedPolicy,
+    threshold: f64,
 }
 
 impl ConfidenceGate {
-    /// 构造（`policy` 共享快照；宿主负责初始化与更新）。
-    pub fn new(policy: SharedPolicy) -> Self {
-        Self { policy }
+    /// 构造（阈值来自宿主；门控覆盖范围 = 挂了本 gate 的 handler）。
+    pub fn new(threshold: f64) -> Self {
+        Self { threshold }
+    }
+
+    /// 门限（诊断面）。
+    pub fn threshold(&self) -> f64 {
+        self.threshold
     }
 }
 
@@ -66,19 +69,14 @@ impl Intercept for ConfidenceGate {
             return Verdict::Keep; // 无 confidence（或 respond 轮）→ 不门控
         };
         if response.tool_calls().next().is_none() {
-            return Verdict::Keep; // 无调用 → 门控只约束工具轮（原生约定）
+            return Verdict::Keep; // 无调用 → 门控只约束工具轮（§27.4 第三行）
         }
-        let threshold = self
-            .policy
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .confidence_threshold
-            .unwrap_or(0.0) as f64;
-        if confidence < threshold {
+        if confidence < self.threshold {
             Verdict::Replace(Err(ErrorReport::new(
                 rig_core::error::ErrorKind::Denied,
                 format!(
-                    "置信度 {confidence:.2} 低于门限 {threshold:.2}，调用未执行（升级契约）"
+                    "置信度 {confidence:.2} 低于门限 {:.2}，调用未执行（升级契约）",
+                    self.threshold
                 ),
             )))
         } else {
@@ -101,15 +99,12 @@ mod tests {
     use rig_core::message::{AssistantContent, ToolName};
     use serde_json::json;
 
-    fn gate(threshold: f32) -> ConfidenceGate {
-        let mut policy = EscalationPolicy::default();
-        policy.confidence_threshold = Some(threshold);
-        ConfidenceGate::new(Arc::new(Mutex::new(policy)))
+    fn gate(threshold: f64) -> ConfidenceGate {
+        ConfidenceGate::new(threshold)
     }
 
     fn completion(choice: Vec<AssistantContent>, confidence: Option<f64>) -> Outcome {
-        let mut origin = rig_core::message::Origin::new("needle.complete", "needle", "needle3");
-        origin.response_id = None;
+        let origin = rig_core::message::Origin::new("needle.complete", "needle", "needle3");
         let response = CompletionResponse::new(
             choice,
             rig_core::completion::Usage::default(),
@@ -132,10 +127,7 @@ mod tests {
         };
         let outcome = Ok(completion(vec![call_part("set_volume")], Some(0.4)));
         let fut = gate.after(EffectId::from_raw(1), &kind, &outcome);
-        assert!(matches!(
-            futures_now(fut),
-            Verdict::Replace(Err(_))
-        ));
+        assert!(matches!(futures_now(fut), Verdict::Replace(Err(_))));
     }
 
     #[test]
@@ -177,7 +169,7 @@ mod tests {
         assert!(matches!(futures_now(fut), Verdict::Keep));
     }
 
-    /// `Waker::noop` 自旋推进（毫秒级 after 体）。
+    /// 同步推进 async 测试体（无执行器依赖；after 是 async fn）。
     fn futures_now<F: std::future::Future>(fut: F) -> F::Output {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);

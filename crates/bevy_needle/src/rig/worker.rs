@@ -20,15 +20,17 @@
 //! 实例，避免与主管线争抢引擎的进程级单会话。
 //!
 //! 回执纪律（I27）：每个提交必得回执——成功帧、引擎错误、通道断开都落回槽，
-//! 绝不静默丢弃。等待以同步机制实现（无 tokio 依赖；`park_timeout` 轮询），
-//! future 体是 `std::future::poll_fn`——主线程 poll 时最多自旋一个短时窗，
-//! 之后 `Pending` 让出帧，不占 ECS 调度。
+//! 绝不静默丢弃。等待是**事件驱动**的：future 在 `Pending` 前向槽注册 waker
+//! （[`futures::task::AtomicWaker`]），worker 落回时精确唤醒一次——主线程
+//! poll 永不阻塞、永不自旋、永不 spawn 线程（I1/I22）。
 
 use std::future::Future;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use std::time::Duration;
+
+use futures::task::AtomicWaker;
+
 use crate::backend::NeedleBackend;
 use crate::engine::NeedleResponse;
 use crate::error::NeedleError;
@@ -56,9 +58,13 @@ impl std::fmt::Display for WorkerError {
 impl std::error::Error for WorkerError {}
 
 /// 单票回灌槽：worker 落回一次，等待方取走；槽与 Job 同生共死，无注册表。
+///
+/// 唤醒是事件驱动的（升级计划 §27.5 ①）：[`futures::task::AtomicWaker`]
+/// 持有等待方注册的 waker，worker 落回时精确唤醒——不再依赖"等待方反复
+/// 轮询/重试"来推进 future。
 pub(crate) struct WaitSlot {
     state: Mutex<SlotState>,
-    ready: Condvar,
+    waker: AtomicWaker,
 }
 
 enum SlotState {
@@ -76,23 +82,28 @@ impl WaitSlot {
     fn new() -> Self {
         Self {
             state: Mutex::new(SlotState::Waiting),
-            ready: Condvar::new(),
+            waker: AtomicWaker::new(),
         }
     }
 
     /// worker 落回（非阻塞；成功与失败同样落回，I27）。
+    ///
+    /// 状态置位后（锁外）唤醒注册的 waker——`AtomicWaker::wake` 可与
+    /// `register` 并发，唤醒竞态由 poll 端的"注册后复查"防线兜住。
     fn deliver(self: &Arc<Self>, outcome: Result<NeedleResponse, WorkerError>) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match &*state {
-            SlotState::Abandoned | SlotState::Taken => return, // 无人等：丢弃。
-            SlotState::Frame(_) => return,                     // 重复回执：丢弃。
-            SlotState::Waiting => {}
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &*state {
+                SlotState::Abandoned | SlotState::Taken => return, // 无人等：丢弃。
+                SlotState::Frame(_) => return,                     // 重复回执：丢弃。
+                SlotState::Waiting => {}
+            }
+            *state = SlotState::Frame(outcome);
         }
-        *state = SlotState::Frame(outcome);
-        self.ready.notify_all();
+        self.waker.wake();
     }
 
     /// 标记弃用（等待 future drop 时）。
@@ -140,10 +151,11 @@ pub struct Submitted {
 
 /// 等待 worker 落回的 future（I1：主线程只 poll，不做阻塞等待）。
 ///
-/// poll 语义：先非阻塞取一次；`Waiting` 则短自旋（worker 回执毫秒级）后
-/// `Pending` 让出帧——唤醒交给下一次 poll（Rig 的 async task 池会重试轮询）。
-/// 不注册 waker：worker 线程与调用线程无共享 waker 通道，Condvar 只服务
-/// 阻塞测试路径；任务池的重试轮询是唯一推进机制。
+/// poll 语义（AtomicWaker 标准两步式，杜绝丢唤醒）：
+/// 1. 先非阻塞取一次——worker 可能早已落回；
+/// 2. 未落回则注册 waker，**再取一次**（注册与 deliver 并发时的竞态防线：
+///    若 deliver 恰在注册前完成，原子唤醒会丢失，复查兜住这一窗口）；
+/// 3. 仍未落回 → `Pending`，推进权全在 worker 的下一次 wake。
 /// Drop 时把槽标记弃用：worker 之后落回的结果被丢弃（无人读，不悬挂）。
 pub struct WaitFuture {
     slot: Arc<WaitSlot>,
@@ -154,22 +166,16 @@ impl Future for WaitFuture {
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        match this.slot.try_take() {
-            Some(outcome) => Poll::Ready(outcome),
-            None => {
-                // 让出：短自旋窗口后再注册下一次唤醒（毫秒级让出，不占帧）。
-                let waker = cx.waker().clone();
-                let slot = Arc::clone(&this.slot);
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(1));
-                    // 总是唤醒：下一次 poll 由 poll 端消费帧（唤醒线程绝不消费，
-                    // 避免竞态）。多余的唤醒（帧已被取走）是无害的 no-op。
-                    let _ = &slot;
-                    waker.wake();
-                });
-                Poll::Pending
-            }
+        if let Some(outcome) = this.slot.try_take() {
+            return Poll::Ready(outcome);
         }
+        this.slot.waker.register(cx.waker());
+        // 注册后复查：deliver 可能在注册生效前已原子唤醒（丢失的是"唤醒"
+        // 而不是帧），复查保证这一窗口不产生永久 Pending。
+        if let Some(outcome) = this.slot.try_take() {
+            return Poll::Ready(outcome);
+        }
+        Poll::Pending
     }
 }
 
@@ -259,16 +265,25 @@ fn run_job(
         .map_err(|err| WorkerError::Engine(describe(&err)))
 }
 
-/// `NeedleError` → worker 错误文本（错误分类投影）。
+/// `NeedleError` → worker 错误文本（错误分类投影；本 crate 自持，
+/// 不借 legacy `needle_runtime` 的文案面——⑦ 冻结纪律）。
 fn describe(err: &NeedleError) -> String {
-    crate::needle_runtime::describe_error(err)
+    error_text(err)
+}
+
+/// [`NeedleError`] 的用户面投影（worker 侧独立持有；不借 legacy 文案面——
+/// ⑦ 冻结纪律：新代码不依赖 legacy）。
+fn error_text(err: &NeedleError) -> String {
+    err.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::Waker;
+    use std::time::Duration;
 
     struct EchoBackend;
 
@@ -329,5 +344,147 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         panic!("worker did not deliver within the test window");
+    }
+
+    /// 阻塞型后端：`complete()` 挂起直到测试放行（验证事件驱动唤醒）。
+    struct GateBackend {
+        release_rx: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl NeedleBackend for GateBackend {
+        fn bind(
+            &self,
+            _signature: u64,
+            _system: &str,
+            _tools_json: &str,
+            _tool_index: Option<&std::path::Path>,
+        ) -> Result<(), NeedleError> {
+            Ok(())
+        }
+
+        fn complete(
+            &self,
+            _input: &str,
+            _max_new_tokens: u32,
+            _buffer: &mut [u8],
+        ) -> Result<NeedleResponse, NeedleError> {
+            // 挂起 worker 线程直到放行（通道关闭 = 测试退出，同样合法回执）。
+            let released = self
+                .release_rx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recv()
+                .is_ok();
+            let body = serde_json::to_vec(&json!({
+                "type": "respond",
+                "success": released,
+                "function_calls": [],
+                "reasoning": "released",
+            }))
+            .expect("serialize");
+            NeedleResponse::parse(&body)
+        }
+
+        fn reset(&self) {}
+    }
+
+    /// 可观测的 waker：wake 时置位（`ArcWake`，AtomicWaker 的标准被唤醒方）。
+    #[derive(Default)]
+    struct WakeFlag(AtomicBool);
+
+    impl futures::task::ArcWake for WakeFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            arc_self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// ① 的核心验收：worker 落回必须**事件驱动**地唤醒已注册 waker——
+    /// 中间没有任何 re-poll（旧实现靠每次 poll spawn 睡眠线程推进，
+    /// 执行器若不再重试轮询即永久 Pending：这就是规格点名的挂死隐患）。
+    #[test]
+    fn deliver_wakes_registered_waker_without_repoll() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let worker = Needle3Worker::new(Arc::new(GateBackend {
+            release_rx: Mutex::new(release_rx),
+        }));
+        let submitted = worker.submit(NeedlePayload {
+            input: "gated".into(),
+            max_new_tokens: 8,
+            session: None,
+        });
+
+        let flag = Arc::new(WakeFlag::default());
+        let waker = futures::task::waker(flag.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = std::pin::pin!(submitted.wait);
+
+        // 1. 首次 poll：帧未落回 → Pending + 注册 waker。
+        assert!(
+            matches!(fut.as_mut().poll(&mut cx), Poll::Pending),
+            "门控未放行前 future 必须保持 Pending"
+        );
+        assert!(
+            !flag.0.load(Ordering::SeqCst),
+            "帧未落回时不得唤醒（假唤醒会让执行器空转）"
+        );
+
+        // 2. 放行 worker → deliver → 原子唤醒。期间**零 re-poll**。
+        let _ = release_tx.send(());
+        let woken = {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if flag.0.load(Ordering::SeqCst) {
+                    break true;
+                }
+                if std::time::Instant::now() > deadline {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        assert!(
+            woken,
+            "worker 落回必须唤醒注册的 waker（AtomicWaker 事件驱动，非重试轮询）"
+        );
+
+        // 3. 被唤醒后的下一次 poll 取走帧。
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(Ok(response)) => {
+                assert_eq!(response.reasoning.as_deref(), Some("released"));
+            }
+            other => panic!("唤醒后 poll 应取走帧，得到 {other:?}"),
+        }
+    }
+
+    /// 丢唤醒防线：落回发生在"注册生效前"窗口时，注册后的复查必须兜住。
+    #[test]
+    fn late_poll_still_observes_frame_delivered_before_registration() {
+        let worker = Needle3Worker::new(Arc::new(EchoBackend));
+        let submitted = worker.submit(NeedlePayload {
+            input: "already-done".into(),
+            max_new_tokens: 8,
+            session: None,
+        });
+        // 自旋等待 worker 落回（绝不 poll future），再首 poll——
+        // 该 poll 的 try_take 直接命中帧（寄存前已 Ready 的路径）。
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut fut = std::pin::pin!(submitted.wait);
+        let mut outcome = None;
+        for _ in 0..10_000 {
+            // noop waker poll：落回先于注册时，首次 try_take 即命中
+            // （"注册后复查"防线的另一半——帧先到、waker 后注册）。
+            if let Poll::Ready(value) = fut.as_mut().poll(&mut cx) {
+                outcome = Some(value.expect("echo backend succeeds"));
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let outcome = outcome.expect("frame should have been observed");
+        assert_eq!(outcome.reasoning.as_deref(), Some("already-done"));
     }
 }

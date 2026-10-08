@@ -6,6 +6,30 @@
 ## [Unreleased]
 
 ### Added
+- **worker 唤醒事件驱动化（升级计划 §27.5 ①）**：`WaitSlot` 去 `Condvar` →
+  `futures::task::AtomicWaker`；`WaitFuture::poll` 改标准两步式（取 → 注册
+  waker → 复查），worker 落回原子唤醒——消除"每 poll spawn 睡眠线程推进"的
+  挂死隐患（执行器不再重试轮询即永久 Pending）与每轮 poll 的线程开销；
+- **canonical call_id（§27.5 ③ / I18 v27）**：`codec::call_id` 单点 mint
+  （`needle-call-<seg>`，model 实例级单调序）——修复旧 per-reply 索引 id
+  跨轮碰撞；rig `CallId` 与两侧同值往返；
+- **置信度门控接进 rig-ecs 执行路径（§27.5 ④ / §27.4）**：e2e 按 effect 计数
+  验收（低置信度 → 零 ToolEffect / 零 WorldEffect / 回调零执行；高置信度 →
+  恰 1 个 ToolEffect；respond 轮永不门控）；`ConfidenceGate` 脱离 legacy
+  `EscalationPolicy`（阈值注册期给定）；
+- **G2-B 双轨工具执行（§27.5 ⑤ / §27.3）**：B1 `register_tool_fn`（宿主直注
+  rig 原生 `ToolFn`，删除借道 legacy `ToolHandlerFn` 的
+  `Entity::PLACEHOLDER + 空 call_id` 违规桥接）；B2 `register_world_tool::<E>`
+  （`Asked<E>` → Bevy system → `Answer<E>`）；
+- **NeedleSecurityPolicy 薄安全层（§26.2/§26.3/§26.6）**：`security.rs`
+  （`NeedleSecurityPolicy` / `SecurityGuard` / `security_guard` 护栏系统挂
+  RigSchedule 的 Select 后 Assemble 前）+ LocalModelOnly E2E（已注册 remote +
+  显式选中 → `Failed(Cancelled)` 安全原因、remote 零 served、不误伤本地 run）；
+- **运行期取消 E2E（§26.7 Cancellation 行）**：在途取消 → 放行迟到完成 →
+  `Failed(Cancelled)` 保持、零答案提交；
+- **legacy 冻结（§26.4 / §27.5 ⑦）**：Agent/Run/Tool runtime 定性为
+  temporary migration fallback；lib.rs 落冻结纪律；`src/rig/` 零 legacy 依赖
+  审计通过。删除门五项中 migration verification 未完成 → 不删除。
 - **breaking：Rig 0.44 适配（升级计划 v23，`rig` / `rig-ecs` feature）**：
   - 依赖切到 registry 发布版 `rig-core =0.44.0` + `rig-ecs =0.44.0`（删除
     git-pin 的 rig-run 前提——I13：上游已删除 rig-run，v23 禁止以其为实现

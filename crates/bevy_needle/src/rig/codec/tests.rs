@@ -80,7 +80,8 @@ fn envelope_respond_becomes_text() {
         peak_ram_mb: None,
         validation: None,
     };
-    let choice = choice_from_envelope(&response);
+    let seq = std::sync::atomic::AtomicU64::new(0);
+    let choice = choice_from_envelope(&response, &seq);
     // reasoning 先落 Reasoning 块，summary()（= reasoning 文本）再落 Text 块。
     assert!(matches!(&choice[0], AssistantContent::Reasoning(_)));
     assert!(matches!(&choice[1], AssistantContent::Text(_)));
@@ -104,11 +105,14 @@ fn envelope_call_becomes_tool_calls() {
         peak_ram_mb: None,
         validation: None,
     };
-    let choice = choice_from_envelope(&response);
+    let seq = std::sync::atomic::AtomicU64::new(0);
+    let choice = choice_from_envelope(&response, &seq);
     match &choice[0] {
         AssistantContent::ToolCall(call) => {
             assert_eq!(call.function.name.as_str(), "APP.change_pitch");
             assert_eq!(call.function.arguments["semitones"], -2);
+            // I18 v27：规范 call id 形态（`needle-call-<seq>`），两侧同值。
+            assert_eq!(call.id.to_string(), "needle-call-0");
         }
         other => panic!("expected tool call, got {other:?}"),
     }
