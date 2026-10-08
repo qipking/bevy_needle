@@ -4,7 +4,7 @@
 //! `Receiver` 包 `Mutex` 以满足 `Resource: Sync`；ECS 每帧 `drain` 非阻塞收割。
 
 use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender};
 
 use bevy_ecs::prelude::Resource;
 
@@ -38,11 +38,9 @@ impl DriverEventBus {
         let Ok(rx) = self.rx.lock() else {
             return events;
         };
-        loop {
-            match rx.try_recv() {
-                Ok(event) => events.push(event),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
+        // `try_iter` 排空到 Empty 即止（Disconnected 由 Sender 静默终止，不循环）。
+        for event in rx.try_iter() {
+            events.push(event);
         }
         events
     }

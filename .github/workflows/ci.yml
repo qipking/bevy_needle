@@ -62,7 +62,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy (engine-free path)
         run: cargo clippy -p bevy_needle --all-targets -- -D warnings
-      # rig-ecs tier clippy（§28.3 / §29.8 G7 依据）
+      # rig-ecs tier clippy（§28.3 / §29.8 G7 依据）。
+      # 注意：lint job 没有 strategy/matrix——此处若写 `if: matrix.os == …`
+      # 会导致该步被静默 skip（假绿）。保持无条件执行。
       - name: clippy (rig-ecs tier)
-        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy -p bevy_needle --all-targets --features rig-ecs -- -D warnings

@@ -191,7 +191,7 @@ fn submit_tier(
 
     let ctx = build_ctx(world, run, tier, attempt, epoch, deadline, reason);
     let bus = world.resource::<DriverEventBus>();
-    let handle = driver.submit(ctx, &bus)?;
+    let handle = driver.submit(ctx, bus)?;
 
     let mut state = EscalationState::new(tier, driver.id(), epoch, reason);
     state.attempt = attempt;
@@ -317,11 +317,13 @@ fn cancel_inflight(world: &mut World) {
     // （`EscalationState.resolved`），**不回查 registry**——registry 的后续
     // mutation（rebind 等）不改变「取消针对谁」。快照缺失（手插状态的
     // 测试场景）按无执行者处理：只清句柄，不虚构取消。
-    let cancels: Vec<(
+    // 快照条目：取消路由用（实体、句柄、resolve 的 driver 实例）。
+    type CancelRoute = (
         Entity,
         super::driver::AttemptHandle,
         Option<Arc<dyn Driver>>,
-    )> = {
+    );
+    let cancels: Vec<CancelRoute> = {
         let mut query = world.query::<(Entity, &RunStatus, &EscalationState)>();
         query
             .iter(world)
@@ -336,10 +338,10 @@ fn cancel_inflight(world: &mut World) {
         if let Some(driver) = resolved {
             driver.cancel(handle);
         }
-        if let Ok(mut entity) = world.get_entity_mut(run) {
-            if let Some(mut state) = entity.get_mut::<EscalationState>() {
-                state.handle = None; // 幂等：不再重复取消
-            }
+        if let Ok(mut entity) = world.get_entity_mut(run)
+            && let Some(mut state) = entity.get_mut::<EscalationState>()
+        {
+            state.handle = None; // 幂等：不再重复取消
         }
     }
 }

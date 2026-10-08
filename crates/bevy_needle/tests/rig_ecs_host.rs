@@ -104,10 +104,10 @@ fn watch_tool_effects(
     mut counter: ResMut<ToolEffectCount>,
 ) {
     let entity = added.event().entity;
-    if let Ok(effect) = effects.get(entity) {
-        if matches!(effect.kind, rig_core::effect::EffectKind::ToolCall { .. }) {
-            counter.0 += 1;
-        }
+    if let Ok(effect) = effects.get(entity)
+        && matches!(effect.kind, rig_core::effect::EffectKind::ToolCall { .. })
+    {
+        counter.0 += 1;
     }
 }
 
@@ -720,17 +720,21 @@ struct ClipSelection {
     selections: u64,
 }
 
+/// B2 应答查询：待回答的 world-served ToolCall effect 过滤面。
+type PendingAnswerQuery<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static rig_ecs::bus::PendingEffect),
+    (
+        Added<rig_ecs::bus::InFlight>,
+        Without<rig_ecs::bus::WorldOutcome>,
+    ),
+>;
+
 /// B2 轨应答系统：读 world-served effect（ToolCall），**用 World 访问**
 /// 修改资源并提交 `WorldOutcome`（§29.4：只有这条轨能证明 execution
 /// semantics 真正归 rig-ecs / Bevy World）。
-fn answer_select_clip(
-    effects: Query<
-        (Entity, &rig_ecs::bus::PendingEffect),
-        (
-            Added<rig_ecs::bus::InFlight>,
-            Without<rig_ecs::bus::WorldOutcome>,
-        ),
-    >,
+fn answer_select_clip(effects: PendingAnswerQuery,
     mut fixture: ResMut<ClipSelection>,
     mut commands: Commands,
 ) {

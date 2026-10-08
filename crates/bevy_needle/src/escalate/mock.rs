@@ -85,6 +85,10 @@ impl MockDriver {
     /// 放行一条挂起事件（G5 取消窗口；FIFO）。
     ///
     /// 返回是否真的放行了一条（`false` = 没有挂起事件）。
+    ///
+    /// # Panics
+    ///
+    /// 若内部挂起队列锁已被毒化（持锁线程 panic）。
     pub fn release(&self, bus: &DriverEventBus) -> bool {
         let held = self.held.lock().expect("mock held poisoned");
         if held.is_empty() {

@@ -155,6 +155,7 @@ pub struct Submitted {
 /// 2. 未落回则注册 waker，**再取一次**（注册与 deliver 并发时的竞态防线：
 ///    若 deliver 恰在注册前完成，原子唤醒会丢失，复查兜住这一窗口）；
 /// 3. 仍未落回 → `Pending`，推进权全在 worker 的下一次 wake。
+///
 /// Drop 时把槽标记弃用：worker 之后落回的结果被丢弃（无人读，不悬挂）。
 pub struct WaitFuture {
     slot: Arc<WaitSlot>,
@@ -595,7 +596,7 @@ mod tests {
     }
 
     /// ── §29.3 任务 B 验收组 ──
-
+    ///
     /// shutdown 幂等 + 停止收新作业 + join 确认。
     #[test]
     fn shutdown_is_idempotent_and_stops_accepting() {

@@ -148,7 +148,7 @@ where
 
 /// G2-B2 World 工具轨（§27.3 硬第二条）：ToolCall 的 World 效果走 **rig-ecs
 /// 的正典 world-served handler**——`Handlers::register_open(key, Tool family)`
-/// + 宿主系统提交 `WorldOutcome`（上游 CONTRACT §8.3；`Asked<E>`/`Answer<E>`
+/// 加宿主系统提交 `WorldOutcome`（上游 CONTRACT §8.3；`Asked<E>`/`Answer<E>`
 /// 是 Custom effect 的通道——Tool family 的广告由 family descriptor 承担）。
 ///
 /// 广告面：Tool family descriptor（name/description/parameters）与 B1 同源；

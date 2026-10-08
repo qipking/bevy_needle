@@ -79,13 +79,13 @@ pub fn terminal_input(history: &[Message]) -> Option<String> {
                         result
                             .content
                             .iter()
-                            .filter_map(|item| match item {
-                                ToolResultContent::Json { value } => Some(value.clone()),
+                            .map(|item| match item {
+                                ToolResultContent::Json { value } => value.clone(),
                                 ToolResultContent::Text(text) => {
-                                    Some(serde_json::json!({ "text": text.text }))
+                                    serde_json::json!({ "text": text.text })
                                 }
                                 ToolResultContent::Image(_) => {
-                                    Some(serde_json::json!({ "image": "unrenderable-image" }))
+                                    serde_json::json!({ "image": "unrenderable-image" })
                                 }
                             })
                             .collect::<Vec<_>>(),
@@ -130,6 +130,10 @@ pub fn tool_results_input(results: &[ToolResultContent]) -> Result<String, serde
 /// 实例级单调序生成 `needle-call-<seq>`——生成一次、两侧同值、执行前
 /// 不得重铸（I18 v27）。`seq` 由调用方传入（wire 解码器持有 model 级
 /// `AtomicU64`，保证跨轮次/跨 run 不碰撞）。
+///
+/// # Panics
+///
+/// 占位名 mint（`ToolName::new`）对非空字面串失败——不变量，正常不会发生。
 pub fn choice_from_envelope(
     response: &NeedleResponse,
     seq: &std::sync::atomic::AtomicU64,

@@ -126,6 +126,14 @@ impl SecurityGuard {
     }
 }
 
+/// 仍活着（未落终态）的 run 过滤面。
+type LiveRunFilter = (
+    With<rig_ecs::agent::Run>,
+    Without<rig_ecs::agent::Failed>,
+    Without<rig_ecs::agent::Settled>,
+    Without<rig_ecs::agent::Cancelled>,
+);
+
 /// 模型选择护栏系统（RigSchedule；Select 之后、Assemble 之前）。
 ///
 /// 读 run 的 [`rig_ecs::agent::UsesModel`]，命中禁止判据（§29.2 fail-closed
@@ -134,15 +142,7 @@ impl SecurityGuard {
 pub fn security_guard(
     mut guard: ResMut<SecurityGuard>,
     selected: Query<(Entity, &rig_ecs::agent::UsesModel)>,
-    live: Query<
-        (),
-        (
-            With<rig_ecs::agent::Run>,
-            Without<rig_ecs::agent::Failed>,
-            Without<rig_ecs::agent::Settled>,
-            Without<rig_ecs::agent::Cancelled>,
-        ),
-    >,
+    live: Query<(), LiveRunFilter>,
     mut commands: Commands,
 ) {
     for (run, rig_ecs::agent::UsesModel(target)) in selected.iter() {

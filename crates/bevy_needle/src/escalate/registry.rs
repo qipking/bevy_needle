@@ -160,10 +160,10 @@ impl DriverRegistry {
 
         // tier 冲突（已绑同一 id = 幂等，跳过）
         for &tier in tiers {
-            if let Some(&bound) = self.tier_map.get(&tier) {
-                if bound != id {
-                    return Err(RegistryError::DuplicateTierBinding { tier, bound });
-                }
+            if let Some(&bound) = self.tier_map.get(&tier)
+                && bound != id
+            {
+                return Err(RegistryError::DuplicateTierBinding { tier, bound });
             }
         }
         Ok(())

@@ -25,6 +25,10 @@ missing_docs = "warn"
 [lints.clippy]
 undocumented_unsafe_blocks = "warn"
 missing_panics_doc = "warn"
+# rig 0.44 契约面固定：宿主 handler 注册/收据函数的 `Result<_, ErrorReport>`
+# 签名与事件枚举形状由上游契约给定，宿主侧不得为 lint 重构签名/装箱。
+result_large_err = "allow"
+large_enum_variant = "allow"
 
 [dependencies]
 bevy_app = { workspace = true }
